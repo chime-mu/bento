@@ -10,7 +10,7 @@
     ./waybar.nix
     ./walker.nix
     ./mako.nix
-    ./hyprpaper.nix
+    ./wallpaper.nix
     ./lock.nix
   ];
 
