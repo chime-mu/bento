@@ -443,7 +443,46 @@ Super+Space, `notify-send test` shows a themed notification. *(All three are now
 executable by the agent: `./scripts/vm-screenshot.sh --key meta_l-spc` presses the bind and
 photographs the result — see `learned/phase-3.md` §1.)*
 
-### Phase 5 — My software + the agent
+### Phase 5 — My software + the agent — ✅ **COMPLETE (2026-08-30)**
+
+> 📓 **Full findings log: [`learned/phase-5.md`](learned/phase-5.md)** — read it before
+> Phase 6. It covers why the launcher could not see software that was installed and on
+> `PATH`, which package in this phase's list still builds from source (and which
+> alternative has been deleted from nixpkgs since the handoff was written), why every
+> nvim-treesitter guide now configures nothing, and a Phase 4 conclusion that turned out
+> to be scoped too broadly.
+
+**Acceptance passed, and only one criterion was handed to a human — the one that needs
+credentials.** `claude --version` reports 2.1.245; `cd ~/bento && claude`, *typed on the
+emulated keyboard*, renders its onboarding and reaches **"Select login method"**; and
+Ghostty, Chromium and Neovim each launch **from the walker launcher**, verified by
+`activated=<entry>.desktop` in elephant's journal and by photographing the QEMU scanout.
+`nix flake check` is green in 73 s, there are no failed units, and `hyprland.log` is still
+**12 107 bytes with 5 `ERR`** — byte-identical to the Phase 3 baseline, with a browser and
+two terminals running.
+
+**Three substitutions from the steps below, all deliberate — see the findings log:**
+
+1. **`nodejs-slim` replaces `nodejs`.** Plain `nodejs` builds from source on this guest —
+   it is the npm wrapper that puts it off the cached path — and compiling V8 in an
+   emulated aarch64 VM is exactly what risk #2 forbids. `nodejs-slim` is the same Node at
+   the same version, fully substituted. Note that `nodejs_20`, which the Phase 4 handoff
+   suggested as the alternative, **no longer exists**: nixpkgs now *throws* "Node.js 20
+   support was removed given upstream End-of-Life on 2026-04-30".
+2. **"LazyVim-style" is a declarative plugin set, not LazyVim.** LazyVim is a lazy.nvim
+   configuration whose job is to `git clone` fifty repositories at first launch, and it
+   wants to own the `~/.config/nvim` that home-manager is filling with read-only store
+   symlinks. What landed is LazyVim's plugin set, keymap scheme and colorscheme, entirely
+   from nixpkgs.
+3. **`bento doctor` lives in `modules/bento-cli.nix`**, not in `agent.nix` as step 4 says.
+   It is a verb of `bento`, and that file owns the subcommand dispatch —
+   `learned/phase-2.md` §6 named it as the seam to hang this off.
+
+**Two risks that did not fire.** Chromium needed no Firefox substitution and Ghostty needed
+no fallback: both are in the aarch64 binary cache (200.1 MiB and 16.4 MiB fetched, zero
+built). Ghostty also turns out **not** to depend on `GSK_RENDERER=cairo`, contrary to
+`learned/phase-4.md` §8's prediction that anything GTK 4 would — it draws its own terminal
+grid, so GSK has almost nothing to compose. The variable stays for walker's sake.
 
 Goal: the v1 app list, with Claude Code working.
 
@@ -467,6 +506,9 @@ Goal: the v1 app list, with Claude Code working.
 **Acceptance:** inside the VM, `claude --version` works; a smoke test of
 `cd ~/bento && claude` (interactive; I verify login myself — API auth needs my
 credentials); Ghostty, Chromium, and Neovim all launch from the Walker launcher.
+*(All but the login itself were executed by the agent —
+`./scripts/vm-screenshot.sh --key meta_l-spc --type Ghostty --key ret` opens the launcher,
+searches it and presses the entry, and elephant's journal names what it activated.)*
 
 ### Phase 6 (stretch) — GPU acceleration
 

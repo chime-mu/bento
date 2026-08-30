@@ -1,142 +1,141 @@
-# Handoff — starting Phase 5 in a fresh session
+# Handoff — starting Phase 6 in a fresh session
 
-Written 2026-08-30, at the end of the Phase 4 session. (Supersedes the Phase 3 → Phase 4
-handoff; its findings now live in `learned/phase-4.md`.)
+Written 2026-08-30, at the end of the Phase 5 session. (Supersedes the Phase 4 → Phase 5
+handoff; its findings now live in `learned/phase-5.md`.)
+
+**Phases 0–5 are complete. v1 is built.** What remains is Phase 6, the stretch goal, which
+`PLAN-v1.md` explicitly says *is allowed to fail*.
+
+## Do this first — the one thing Phase 5 could not do
+
+**Log Claude Code in.** It needs your credentials and no agent can do it for you.
+
+```bash
+./scripts/run-vm.sh --headless     # only if it is not already up
+ssh -p 2222 chime@localhost
+cd ~/bento && claude               # pick a theme, then "Select login method"
+```
+
+Verified up to that prompt and no further: Claude Code 2.1.245 starts, renders, and asks.
+The token lands in `~/.claude` inside the guest — it survives every `bento rebuild` and it
+does **not** survive the clean loop, because `build-image.sh` replaces the disk. Re-login
+is part of the cost of a re-image.
+
+Everything else in Phase 5's acceptance was executed and verified by the agent.
 
 ## Paste this into the new session
 
-> Implement **Phase 5** of `PLAN-v1.md` in this repo (`/Users/chime/Workspace/Bento`).
+> Implement **Phase 6** of `PLAN-v1.md` in this repo (`/Users/chime/Workspace/Bento`).
 >
 > Read `PLAN-v1.md` and every `learned/phase-*.md` in full before doing anything — the
 > learned files record measured facts that contradict upstream documentation, and you will
 > waste time or break things working from the official docs.
 >
-> The decisions table in the plan is fixed; do not re-litigate it. If a named package or
-> option doesn't exist in current nixpkgs, find the current equivalent and note the
-> substitution in your report and in `learned/phase-5.md`.
+> **Phase 6 is different from 1–5: it is mostly *host* work, and it is allowed to fail.**
+> The goal is GPU acceleration, and Phase 0 settled that this needs *replacing* the host's
+> QEMU, not configuring it. Read `learned/phase-0.md` §2 and §3 first — §3 is a reading of
+> try-omarchy's build scripts and is the reference implementation for exactly this host and
+> guest. Do not re-test whether Homebrew's QEMU can do VirGL; it cannot, and that is
+> recorded with the four probes that established it.
 >
-> Phase 5 runs *inside* the VM via the Phase 2 loop. The VM is probably already running —
-> check with `pgrep -fl qemu-system-aarch64` before starting a second one:
->   ./scripts/run-vm.sh --headless   # only if it is not up; the GPU is attached either way
->   ./scripts/vm-sync.sh status      # who is ahead of whom
->   ./scripts/vm-sync.sh push        # get this repo's HEAD into the VM
->   ssh -p 2222 chime@localhost      # then: cd ~/bento, edit, `bento rebuild`
-> You do **not** need the linux builder or a new image.
+> Building QEMU from source, and code-signing it for `com.apple.security.hypervisor`, will
+> need my involvement — batch anything requiring sudo into one script for me to run, the
+> way `scripts/setup-linux-builder.sh` did in Phase 0.
 >
-> **Verify as much of Phase 5's acceptance as you can yourself — do not hand it to me.**
-> `./scripts/vm-screenshot.sh` photographs the guest's actual screen over QMP, and
-> `--key` / `--type` press keys on its emulated keyboard, all under `--headless`. Phase 4
-> used it to open the launcher, type an application name into it, watch the app start, and
-> type a password into the lock screen. `learned/phase-3.md` §1 has the mechanics.
+> **If it works**, `run-vm.sh --gl` should switch modes and the software-rendering
+> concessions come off — see "what Phase 6 gets to delete" below. **If it does not**,
+> document the findings in `learned/phase-6.md`, leave the VM on software rendering, and
+> say so plainly. A failed Phase 6 that is well documented is the expected outcome, not a
+> disappointment.
 >
-> The one thing you genuinely cannot do is log Claude Code in — that needs my credentials.
-> List that, and anything else like it, as explicit manual steps at the end. Finish by
-> writing `learned/phase-5.md`, `./scripts/vm-sync.sh pull`, and committing.
+> Finish by writing `learned/phase-6.md`, `./scripts/vm-sync.sh pull`, and committing.
 
 ## State to be aware of
 
-**The bento VM is running, windowed**, with a live Hyprland session — bar, wallpaper,
-launcher, the lot — that a human may be looking at. It was left up deliberately. Check
-before assuming: `pgrep -fl qemu-system-aarch64`.
-
-Two consequences:
-
-- **Do not restart it just to get `--headless`.** There is no difference that matters: the
-  GPU is attached in both modes and `scripts/vm-screenshot.sh` works either way. The window
-  is a *bonus* — a human can watch what you are building.
-- **A `bento rebuild` reloads that live session** (home-manager's Hyprland hook runs
-  `hyprctl reload`, and it restarts the changed user services), which is what you want, but
-  a broken config is visible to whoever is watching. Nothing is destroyed by it; greetd is
-  not restarted.
-
-**But note one thing a rebuild does *not* do.** `environment.sessionVariables` lands in
-`/etc/pam/environment`, which is read once when the PAM session opens. Anything added there
-— Phase 5 will add Chromium's Wayland hints if they are not already right — does not reach
-the running session until the guest **reboots** (~25 s). `systemctl --user show-environment`
-tells you what the session actually has, and `journalctl -u greetd -b` confirms the
-autologin fired.
-
-The linux-builder is **not** running and Phase 5 does not need it.
-
-| What | How to start | Needed for Phase 5? |
-|---|---|---|
-| bento VM | `./scripts/run-vm.sh` (windowed) or `--headless` | **yes** — already up |
-| `linux-builder` VM | `./scripts/start-linux-builder.sh` | no — only to rebuild the *image* |
+**The bento VM is running, windowed**, with a live Hyprland session a human may be looking
+at. Check before assuming: `pgrep -fl qemu-system-aarch64`. Do not restart it just to get
+`--headless` — the GPU is attached in both modes and `scripts/vm-screenshot.sh` works
+either way.
 
 **Host and VM are in sync**, both trees clean — confirm with `./scripts/vm-sync.sh status`
-rather than trusting this file. The guest has been rebuilt twenty-five times on top of the
-Phase 1 image, and `nixos-version --configuration-revision` reports the commit it was built
-from. That stamp trails HEAD by any docs-only commits made after the last rebuild, which is
-correct and not worth a rebuild to fix.
+rather than trusting this file. The guest has been rebuilt 31 times on top of the Phase 1
+image. `bento doctor` (new in Phase 5) answers all of this in one screen, including whether
+the running system is the commit you are reading.
 
 **`artifacts/bento.qcow2` is the live disk and there is no snapshot behind it.**
-`build-image.sh` replaces it outright and `bento gc --all` deletes the generations you could
-roll back to. Treat both as destructive; `./scripts/vm-sync.sh pull` before either.
+`build-image.sh` replaces it outright and `bento gc --all` deletes the generations you
+could roll back to. Treat both as destructive; `./scripts/vm-sync.sh pull` before either.
+**A re-image now also costs the Claude Code login.**
 
-**Everything Phase 0 put under `/etc` is untouched.** Phases 1–4 needed no sudo on the host.
+**Everything Phase 0 put under `/etc` is untouched.** Phases 1–5 needed no sudo on the
+host. Phase 6 will be the first that does.
 
-## The Phase 4 findings most likely to bite Phase 5
+The linux-builder is **not** running. Phase 6 needs it only if it rebuilds the image.
 
-Full detail in `learned/phase-4.md`. Phase 5 adds ghostty, chromium, neovim and claude-code
-— three of them large, two of them GPU-adjacent.
+| What | How to start | Needed for Phase 6? |
+|---|---|---|
+| bento VM | `./scripts/run-vm.sh` (windowed) or `--headless` | **yes** — already up |
+| `linux-builder` VM | `./scripts/start-linux-builder.sh` | only to rebuild the *image* |
 
-1. **`GSK_RENDERER=cairo` is set for the whole session, and it has to stay.** GTK 4 has no
-   working renderer on this guest: radv claims virtio-gpu and fails, then GSK's GL renderer
-   fails too, and the result is a window that maps at the right size and draws *nothing*
-   (`phase-4.md` §2). If a Phase 5 app appears invisible, that is the shape of the bug —
-   check its toolkit before you check your config.
+## What Phase 6 gets to delete, if it succeeds
 
-2. **PLAN-v1 risk #2 is already measured for you — and it fires in exactly one place.**
-   Probed in the guest at the end of Phase 4 with
-   `nix build --dry-run nixpkgs#<attr>` ("will be fetched" is fine, "will be built" is not):
+Software rendering is not spread through the config — it hangs off one option, and these
+are the places that read it. This list is the phase's own acceptance checklist in reverse:
 
-   | Package | nixpkgs | Verdict |
-   |---|---|---|
-   | `ghostty` | 1.3.1 | ✅ fetched (16 MiB) — **no substitution needed** |
-   | `chromium` | 152.0.7977.64 | ✅ fetched (200 MiB) — **no Firefox substitution needed** |
-   | `neovim` | 0.12.5 | ✅ fetched |
-   | `ripgrep` / `gh` / `fd` | — | ✅ fetched (fd is already in the store) |
-   | `claude-code` | 2.1.245 | ✅ two trivial derivations (a JS-bundle fetch + its wrapper), not a compile |
-   | **`nodejs`** | **24.19.0** | ❌ **builds from source** |
+| Where | What comes off |
+|---|---|
+| `hosts/bento-vm/default.nix` | `bento.desktop.softwareRendering = true` — the single switch |
+| `modules/desktop.nix` | `GSK_RENDERER = "cairo"` (`learned/phase-4.md` §2) |
+| `home/chime/hyprland.nix` | animations, blur, shadows and `no_hardware_cursors` all key off the option and come back on by themselves |
+| `home/chime/wallpaper.nix` | swaybg could go back to hyprpaper — **but re-test the `AB4H` GBM allocation first** (`learned/phase-4.md` §3); the crash is a missing null check in hyprtoolkit, and real GL may or may not clear it |
 
-   So the *one* thing to avoid is the plain `nodejs` PLAN-v1 §5 names. `nodejs-slim` is
-   fully substitutable and `nodejs_20` is already in the guest's store; pick one and note
-   the substitution. Re-run the probes rather than trusting this table — nixpkgs moves.
+`scripts/run-vm.sh` is where `--gl` belongs, next to the existing `--headless` and
+`--reset-vars`.
 
-   Note also that **`nix build nixpkgs#claude-code` fails on its own** with an assertion
-   from `lib/customisation.nix` — that is only the unfree licence gate, because the bare
-   `nixpkgs#` registry reference does not inherit the flake's
-   `nixpkgs.config.allowUnfree = true`. Inside `nixosConfigurations.bento-vm` it is fine.
-   To probe it by hand: `NIXPKGS_ALLOW_UNFREE=1 nix build --dry-run --impure nixpkgs#claude-code`.
+**Beware the trap `learned/phase-3.md` §1 records:** adding or removing an emulated PCI
+device renumbers the slots, the boot entry in `artifacts/edk2-aarch64-vars.fd` stops
+resolving, and the firmware drops to a `Shell>` prompt instead of booting. Swapping
+`virtio-gpu-pci` for `virtio-gpu-gl-pci` is exactly that kind of change.
+`./scripts/run-vm.sh --reset-vars` is the fix, and a UEFI Shell prompt is the symptom to
+recognise on sight.
 
-3. **The Hypr* ecosystem's newer tools assume a real GPU.** hyprpaper 0.8 segfaults here —
-   it asks GBM for `ABGR16161616F`, which virtio-gpu does not have, and dereferences the
-   null (`phase-4.md` §3). swaybg replaced it. Anything else built on **hyprtoolkit** is
-   suspect on this guest.
+## The Phase 5 findings most likely to bite Phase 6
 
-4. **The theme already has what ghostty needs.** `home/chime/theme/colors.nix` exports three
-   vocabularies: `palette` (Tokyo Night's own names), `hex`/`css` (*roles* —
-   `background`, `accent`, `warn`), and `terminal` (the ANSI 16). **Consumers read roles or
-   `terminal`, never `palette` directly** — that is the theme-switcher seam. `home/chime/foot.nix`
-   is the worked example; ghostty's colour config is the same list under different key names.
+Full detail in `learned/phase-5.md`.
 
-5. **`$terminal` in `home/chime/hyprland.nix` is still the single line** that switches foot
-   → ghostty. Keep `home/chime/foot.nix`: a themed fallback that cannot be the reason a
-   graphical test fails is worth the twenty lines. **`Super+B` is still unbound**, waiting
-   for chromium.
+1. **A daemon that indexes a Nix profile is wrong from the next rebuild onwards, and cannot
+   notice** (§1). elephant scanned `XDG_DATA_DIRS` once at login, and the launcher then
+   reported "Nothing matches" for software that was installed, on `PATH` and already
+   running. A rebuild repoints the profile *symlink* at a new store path rather than
+   touching the old directory, so neither a scan nor an inotify watch ever invalidates.
+   `home/chime/walker.nix` fixes it with `X-Restart-Triggers`; anything new that indexes
+   `PATH`, fonts or icons needs the same. Never trigger on `system.build.toplevel` — from
+   inside home-manager that is an infinite recursion.
 
-6. **Nerd Font glyphs are written as codepoints, not pasted characters.** The Private Use
-   Area does not survive a round trip through a file writer — Phase 4 lost every glyph in
-   the waybar config, silently, and the bar rendered the padding with no icon
-   (`phase-4.md` §1). `home/chime/theme/default.nix` has a `glyph` helper built on
-   `builtins.fromJSON`; add to `icons` rather than inlining a character.
+2. **`learned/phase-4.md` §8's "anything GTK 4 depends on `GSK_RENDERER=cairo`" is too
+   broad** (§6). Ghostty is GTK 4 and draws identically with `GSK_RENDERER=gl`, because it
+   renders its own terminal grid and hands GSK almost no widget chrome. The correct claim
+   is "GSK's *widget* rendering is broken here". If Phase 6 lands real GL, walker is the
+   application to re-test the variable against — it is the one that actually depends on it.
 
-7. **home-manager will not always write the systemd unit you need.** mako's module installs
-   a D-Bus service file naming `mako.service` and never creates it (`phase-4.md` §6);
-   swaybg has no module at all. Both units are hand-written in `home/chime/`. Check
-   `systemctl --user is-active <name>` after adding any daemon, and
-   `systemctl --user list-units --state=failed` before declaring a phase done.
+3. **Verify colours by sampling the scanout, not by looking at it.** `learned/phase-5.md`
+   §8 describes a forty-line pure-stdlib PNG reader (macOS has no PIL); it reported the
+   ghostty window as 96.9 % `#1a1b26` and turned "does it look right" into a number checked
+   against `home/chime/theme/colors.nix`. Phase 6's whole claim is about rendering, so it
+   will want this. It was a throwaway — rebuild it, or promote it into `scripts/`.
 
-8. **`pkill -f` still kills the ssh session running it.** `phase-3.md` §7 said so, and Phase
-   4 did it again: the pattern appears in the killing command's own command line. Use
-   `pkill -x`. The symptom is exit code 255 and no output at all.
+4. **`nix build --dry-run | tail` hides the verdict** (§9). "will be built" / "will be
+   fetched" is the *first* line, before the path list. Grep for it.
+
+5. **A findings log naming a package version is perishable.** `nodejs_20`, which the
+   *previous* handoff recommended, had been deleted from nixpkgs by the time Phase 5 ran —
+   and it `throw`s rather than warns. Re-run every probe.
+
+6. **`writeShellApplication` treats shellcheck info-level findings as fatal**, and
+   shellcheck's own output dies on non-ASCII in the script (`cannot encode character
+   '\8212'` — an em-dash in a comment), truncating the diagnostics mid-sentence (§7). If a
+   shell-script build fails with a garbled message, the real error list is longer than what
+   you can see.
+
+7. **`pkill -f` still kills the ssh session running it.** `phase-3.md` §7 said so, Phase 4
+   did it again, and it is still true. Use `pkill -x`. Exit code 255 and no output.

@@ -24,7 +24,7 @@ v1 runs as a QEMU virtual machine on an Apple Silicon MacBook. Bare metal comes 
 | 2 — Iteration loop from inside the VM | ✅ **complete** |
 | 3 — Wayland + Hyprland (software rendering) | ✅ **complete** |
 | 4 — Omarchy visual foundations | ✅ **complete** |
-| 5 — My software + the agent | ⬜ |
+| 5 — My software + the agent | ✅ **complete** |
 | 6 — GPU acceleration (stretch, allowed to fail) | ⬜ |
 
 ## Read these first
@@ -37,6 +37,7 @@ v1 runs as a QEMU virtual machine on an Apple Silicon MacBook. Bare metal comes 
 | **[`learned/phase-2.md`](learned/phase-2.md)** | Measured findings from Phase 2 — the two loops, why the host and the VM are two git repos rather than one 9p share, and which files a rebuild can and cannot see. |
 | **[`learned/phase-3.md`](learned/phase-3.md)** | Measured findings from Phase 3 — how to screenshot and type into the VM without a human, and why both of the software-rendering environment variables everyone recommends are wrong here. |
 | **[`learned/phase-4.md`](learned/phase-4.md)** | Measured findings from Phase 4 — why GTK 4 draws nothing without `GSK_RENDERER=cairo`, why hyprpaper segfaults on virtio-gpu, and why Nerd Font glyphs have to be written as codepoints. |
+| **[`learned/phase-5.md`](learned/phase-5.md)** | Measured findings from Phase 5 — why a launcher cannot see software a rebuild just installed, which Node builds from source, and why every nvim-treesitter guide now configures nothing. |
 
 ## Host setup
 
