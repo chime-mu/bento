@@ -1,0 +1,6 @@
+artifacts/
+result
+result-*
+.DS_Store
+*.qcow2
+*.fd
