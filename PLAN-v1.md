@@ -509,6 +509,8 @@ credentials); Ghostty, Chromium, and Neovim all launch from the Walker launcher.
 *(All but the login itself were executed by the agent —
 `./scripts/vm-screenshot.sh --key meta_l-spc --type Ghostty --key ret` opens the launcher,
 searches it and presses the entry, and elephant's journal names what it activated.)*
+**The login was completed by hand on 2026-08-30, after Phase 6.** It was the last open
+item in this plan; every acceptance criterion in every phase is now met.
 
 ### Phase 6 (stretch) — GPU acceleration — ✅ **COMPLETE (2026-08-30)**
 

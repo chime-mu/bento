@@ -303,9 +303,10 @@ What makes that workable rather than alarming:
 | **The VM is disposable** | It is a qcow2 on the host. Worst case, `./scripts/vm-sync.sh pull` and rebuild the image. |
 
 Claude Code needs to be logged in once, interactively, with your own credentials — an
-agent cannot do that for you. Run `claude` and follow the prompt; the token lands in
-`~/.claude` in the guest's home directory, which survives every `bento rebuild` and does
-**not** survive the clean loop.
+agent cannot do that for you. **This has been done** (2026-08-30). Run `claude` and follow
+the prompt if it is ever needed again: the token lands in `~/.claude` in the guest's home
+directory, which survives every `bento rebuild` and does **not** survive the clean loop, so
+`./scripts/build-image.sh` costs you a re-login.
 
 The tools the agent leans on — `ripgrep`, `fd`, `gh`, `jq`, `curl`, `nodejs-slim` — are in
 `modules/agent.nix` rather than in anyone's home profile, because they are part of what

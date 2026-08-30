@@ -11,20 +11,26 @@ allowed to fail. It did not: the guest renders on the M4's GPU through VirGL, an
 There is no Phase 7. **The next session needs a decision from you about what v2 is**, not
 an implementation task — see "Where to go next".
 
-## Do this first — the one thing still outstanding
+## Nothing is outstanding
 
-**Log Claude Code in.** It needs your credentials and no agent can do it for you. This is
-carried over unchanged from the Phase 5 handoff; nothing since has been able to close it.
+**Claude Code is logged in** (2026-08-30, at the guest's own screen). That was the last
+open item in the whole plan, carried since Phase 5 as the one thing no agent could do, and
+it is closed: `~/.claude/.credentials.json` exists, 600, and `claude --version` reports
+2.1.245. The agent-driven loop the whole repo was built for now works end to end:
 
 ```bash
-./scripts/run-vm.sh                # only if it is not already up
-ssh -p 2222 chime@localhost
-cd ~/bento && claude               # pick a theme, then "Select login method"
+ssh -p 2222 chime@localhost        # or Super+Return in the VM window
+cd ~/bento && claude               # ask for an OS change → agent edits the flake → bento rebuild
 ```
 
-Verified up to that prompt and no further: Claude Code 2.1.245 starts, renders, and asks.
-The token lands in `~/.claude` inside the guest — it survives every `bento rebuild` and it
-does **not** survive the clean loop, because `build-image.sh` replaces the disk.
+**The one thing that can undo it is a re-image.** The token lives in `~/.claude` in the
+guest, which survives every `bento rebuild` and does **not** survive `build-image.sh`,
+because that replaces the disk. Logging back in is part of the cost of the clean loop —
+budget for it rather than being surprised by it.
+
+If the VM window is locked when you get there, that is hyprlock on hypridle's 30-minute
+timer: the box reading "Locked" is the password field, the password is `bento`, and there
+is no cursor in it until you start typing.
 
 ## State to be aware of
 
