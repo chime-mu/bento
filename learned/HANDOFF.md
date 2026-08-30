@@ -1,104 +1,84 @@
-# Handoff — starting Phase 2 in a fresh session
+# Handoff — starting Phase 3 in a fresh session
 
-Written 2026-08-30, at the end of the Phase 1 session.
+Written 2026-08-30, at the end of the Phase 2 session. (Supersedes the Phase 1 → Phase 2
+handoff; the findings it carried now live in `learned/phase-1.md` and `learned/phase-2.md`.)
 
 ## Paste this into the new session
 
-> Implement **Phase 2** of `PLAN-v1.md` in this repo (`/Users/chime/Workspace/Bento`).
+> Implement **Phase 3** of `PLAN-v1.md` in this repo (`/Users/chime/Workspace/Bento`).
 >
-> Read `PLAN-v1.md`, `learned/phase-0.md` and `learned/phase-1.md` in full before doing
-> anything — the learned files record measured facts that contradict upstream
-> documentation, and you will waste time or break things working from the official docs.
+> Read `PLAN-v1.md` and every `learned/phase-*.md` in full before doing anything — the
+> learned files record measured facts that contradict upstream documentation, and you will
+> waste time or break things working from the official docs.
 >
 > The decisions table in the plan is fixed; do not re-litigate it. If a named package or
 > option doesn't exist in current nixpkgs, find the current equivalent and note the
-> substitution in your report and in `learned/phase-2.md`.
+> substitution in your report and in `learned/phase-3.md`.
 >
-> Phase 2 runs *inside* the VM, so start with:
->   ./scripts/run-vm.sh --headless    # then: ssh -p 2222 chime@localhost
-> The image already exists at artifacts/bento.qcow2. You only need the linux builder
-> (./scripts/start-linux-builder.sh) if you have to rebuild the image itself — Phase 2
-> should not need to.
+> Phase 3 runs *inside* the VM via the Phase 2 loop. Start with:
+>   ./scripts/run-vm.sh --headless
+>   ./scripts/vm-sync.sh push        # get this repo's HEAD into the VM
+>   ssh -p 2222 chime@localhost      # then: cd ~/bento, edit, `bento rebuild`
+> You do **not** need the linux builder or a new image.
 >
 > Verify the acceptance criteria yourself. Anything you cannot verify (needs the VM's
 > screen, or my credentials) — list it for me as explicit manual steps at the end.
-> Finish by writing `learned/phase-2.md` and committing.
+> Finish by writing `learned/phase-3.md`, `./scripts/vm-sync.sh pull`, and committing.
 
 ## State to be aware of
 
-**Nothing is running.** Both VMs were shut down at the end of the Phase 1 session:
+**The bento VM may still be running** from the Phase 2 session. `./scripts/run-vm.sh
+--headless` if not; the linux-builder is **not** needed and was never started in Phase 2.
 
-| What | How to start | Needed for Phase 2? |
+| What | How to start | Needed for Phase 3? |
 |---|---|---|
-| bento VM | `./scripts/run-vm.sh --headless` | **yes** — Phase 2 happens inside it |
-| `linux-builder` VM | `./scripts/start-linux-builder.sh` | only to rebuild the *image* |
+| bento VM | `./scripts/run-vm.sh --headless` | **yes** |
+| `linux-builder` VM | `./scripts/start-linux-builder.sh` | no — only to rebuild the *image* |
 
-**`artifacts/bento.qcow2` already exists** (2.7 GiB in a 60 G qcow2) and is gitignored, so
-it survives across sessions. `artifacts/edk2-aarch64-vars.fd` — the fabricated EFI
-variable store — persists too, and holds the boot entry written on first boot.
-`./scripts/run-vm.sh --reset-vars` throws it away if it ever gets confused.
+**`artifacts/bento.qcow2` is the live disk, and it has moved on.** It still boots, but the
+guest has been rebuilt several times on top of it and is now at flake revision `a1e36f8`.
+There is no snapshot behind it — `build-image.sh` replaces it outright, and `bento gc
+--all` inside the guest deletes the older generations you could roll back to. Treat both
+as destructive.
 
-Rebuilding the image from scratch takes roughly **25 minutes** and needs the builder up.
-Avoid it: Phase 2's entire point is that you don't have to.
+**The VM already has `~/bento`** as a real git repo with no `origin`, and this repo has it
+as a remote named `vm`. `./scripts/vm-sync.sh status` shows whether they agree. If a push
+ever fails with *"Too many authentication failures"*, the remote URL lost its port and is
+hitting the Mac's own sshd — `./scripts/vm-sync.sh init` rewrites it.
 
-**Everything Phase 0 put under `/etc` is untouched and still valid.** Phase 1 needed no
-sudo at all.
+**Everything Phase 0 put under `/etc` is untouched.** Phases 1 and 2 needed no sudo on the
+host at all.
 
-**The committed config is one change ahead of the image — use it as your first test.**
-`home/chime/default.nix` now sets the git identity to `Michael Arnoldus <chime@mu.dk>`,
-but `artifacts/bento.qcow2` was built before that and still carries the old
-`ma@goodmonday.io`. Rebuilding the image for a one-line change would be exactly the waste
-Phase 2 exists to eliminate, so it was left for the in-VM loop to pick up. That makes a
-free, zero-risk first probe of the whole Phase 2 premise:
+## The Phase 2 findings most likely to bite Phase 3
 
-```bash
-ssh -p 2222 chime@localhost 'git config --get user.email'   # → ma@goodmonday.io (stale)
-# ... get the repo into ~/bento, then nixos-rebuild switch --flake ~/bento#bento-vm ...
-ssh -p 2222 chime@localhost 'git config --get user.email'   # → chime@mu.dk
-```
+Full detail in `learned/phase-2.md`; these three have direct consequences, and Phase 3 is
+the phase that adds the most *new files* so far — which is exactly what §3 is about.
 
-If that flips, the fast loop works. Note the account's SSH login key in
-`modules/core.nix` is deliberately a *different* identity (`ma@goodmonday.io`, the host's
-`~/.ssh/id_ed25519.pub`) — it is the only non-YubiKey key available, and an agent cannot
-touch a hardware key. Leave it unless you want to generate a dedicated bento key.
+1. **A rebuild sees edits to tracked files, but not new untracked ones.** A dirty tracked
+   file works fine (`warning: Git tree is dirty`, then it uses your edits). A *new* file
+   that nothing imports yet — a wallpaper, a themed config fragment — is invisible with **no
+   error at all**, and the symptom is "my change did nothing". `bento rebuild` stages
+   untracked files with `git add -N` before rebuilding for exactly this reason, but if you
+   call `nixos-rebuild` directly you are on your own.
 
-## The Phase 1 findings most likely to bite Phase 2
+2. **Iterate with `bento rebuild`, and expect seconds.** 1.3 s for a no-op, 6.4 s to add a
+   cached package. If something takes minutes, it is compiling from source — stop and
+   check, because `PLAN-v1.md` risk #2 says never to build Chromium or Ghostty from source
+   in the VM. Substitute and report instead.
 
-Full detail in `learned/phase-1.md`; these three have direct Phase 2 consequences.
+3. **Run `nix flake check` inside the guest**, where it is a native `aarch64-linux`
+   evaluation needing no builder. It omits `aarch64-darwin`; only the Mac can cover that,
+   and only with the builder up.
 
-1. **`hosts/bento-vm/hardware.nix` duplicates the disk layout on purpose, and Phase 2 is
-   exactly what would break if it were "cleaned up".** The image module sets
-   `fileSystems` only while building the image; `nixos-rebuild switch --flake
-   ~/bento#bento-vm` evaluates the config *without* it. Delete those `mkDefault`s and the
-   in-VM rebuild fails with *"The ‘fileSystems’ option does not specify your root file
-   system"* — while the image still builds fine, so the mistake looks harmless until the
-   first rebuild. (Verified: the standalone evaluation resolves `/` →
-   `/dev/disk/by-label/nixos`, ext4, autoResize, and systemd-boot enabled.)
+## What Phase 3 is walking into
 
-2. **The VM has `nixpkgs` pinned into its own store.** `flake.nix` sets
-   `nix.registry.nixpkgs.flake` and `nix.nixPath` to the exact locked revision, so inside
-   the VM `nix shell nixpkgs#…` and `<nixpkgs>` resolve to the same tree the image was
-   built from, without a channel. The flake's *other* input (home-manager) is not pinned
-   that way, so the first in-VM `nixos-rebuild` will want to fetch it — the VM needs
-   working network for that. NAT via `-nic user` is already configured.
-
-3. **`chime` is a trusted Nix user in the guest** (`trusted-users = [ "root" "@wheel" ]`)
-   and has passwordless sudo, so an agent inside the VM can rebuild the OS unattended.
-   That is the Phase 2 loop working as designed, not an oversight.
-
-## Confirmed available for Phase 2
-
-- Guest is NixOS `26.11.20260828.83199d0`, Nix 2.34.8, `aarch64`, kernel 6.18.47.
-- `git` is in the guest (both system-wide and via home-manager), so cloning the repo into
-  `~/bento` works. The host repo is at `/Users/chime/Workspace/Bento`; `scp -P 2222` is
-  the plan's suggested first transport.
-- Root filesystem is 59 G with 54 G free — plenty of room for generations.
-
-## Open question Phase 2 should settle
-
-The plan says to copy the repo into the VM with `scp -P 2222`, then later switch to a git
-remote. Worth deciding early *which direction is authoritative*: if edits happen inside
-the VM, the host repo (the one under git, with the flake.lock that built the image) needs
-a way to receive them. A shared 9p/virtfs mount of the host repo is a third option QEMU
-supports and would avoid two diverging copies entirely — consider it before committing to
-`scp`, and record the choice in `learned/phase-2.md`.
+- Graphics are **software rendering, settled in Phase 0** — the host QEMU has no OpenGL
+  compiled in at all. `learned/phase-0.md` §2 and §3 have the measured probes and
+  try-omarchy's exact guest env vars. Use `WLR_RENDERER_ALLOW_SOFTWARE`, **not** the older
+  `WLR_NO_HARDWARE_CURSORS` that early drafts of the plan guessed at.
+- `run-vm.sh --headless` gives no window. Phase 3's acceptance needs the **Cocoa window**,
+  so run `./scripts/run-vm.sh` without `--headless` — and note that only a human at the
+  screen can confirm "boots straight into Hyprland".
+- `hosts/bento-vm/hardware.nix` already passes `console=tty0` alongside the serial console
+  specifically so the QEMU graphical window stays usable (`learned/phase-1.md` §3). Don't
+  remove it.

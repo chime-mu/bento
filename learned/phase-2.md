@@ -118,8 +118,17 @@ host credential inside a disposable VM. The 2222 forward needs neither.
 - **`pull` is fast-forward only.** A divergence means the same OS definition was edited on
   both sides, and inventing a merge commit for that silently is not a favour.
 - **The port belongs in the remote URL** (`ssh://chime@localhost:2222/home/chime/bento`),
-  not only in `GIT_SSH_COMMAND`. The first version put it only in the latter, which works
-  for the script and then sends a hand-typed `git push vm` to port 22 on the Mac.
+  not only in `GIT_SSH_COMMAND`. The first version put it only in the latter, and the
+  failure is worth recognising on sight, because it names nothing relevant:
+
+  ```
+  Received disconnect from ::1 port 22:2: Too many authentication failures
+  ```
+
+  Port 22 on `localhost` is **the Mac's own sshd**, which is running (§2). So a
+  wrong-port git remote does not fail to connect — it connects to the wrong machine,
+  offers every key in the agent, and gets thrown out. If `vm-sync.sh` ever reports that,
+  the remote URL is stale: re-run `./scripts/vm-sync.sh init`, which rewrites it.
 - **Host keys are deliberately not pinned.** The guest regenerates its ssh host keys every
   time the image is rebuilt, so pinning would mean teaching the user to clear a
   `REMOTE HOST IDENTIFICATION HAS CHANGED` warning after each clean loop. Same posture
@@ -221,7 +230,38 @@ every entry you could boot back to, and there is no NVRAM and no disk snapshot b
 the qcow2 on the host *is* the live disk. The default is `--older-than 30d` for that
 reason, and the help text says so.
 
-## 7. Run `nix flake check` inside the VM, not on the Mac
+## 7. The running system now says which commit it came from
+
+Not in `PLAN-v1.md`, and added because the gap was obvious the moment the loop existed:
+`nixos-rebuild list-generations` reported `Configuration Revision: Unknown` for every
+generation. On an OS whose premise is an agent rewriting it in place, *"which revision am
+I running?"* is the first question after anything breaks, and the boot menu is a poor
+place to answer it.
+
+One line in `flake.nix`'s module list:
+
+```nix
+system.configurationRevision = self.rev or self.dirtyRev or "unknown";
+```
+
+Both halves matter. `self.rev` exists only for a clean tree; `dirtyRev` covers the
+mid-edit case, which is the common one in this loop, and marks it visibly:
+
+```
+7  …  a1e36f81d3433424c43d30f5764deab8e50811d3
+6  …  a2262540d3d7e097a5f3661fb00a3a6d4d6a3e87-dirty
+5  …  Unknown
+```
+
+`nixos-version --configuration-revision` prints the same string. Generations built before
+this landed keep reading `Unknown`, which is correct — nothing recorded it at the time.
+
+This change is also the one that proved the `pull` direction end to end: it was written,
+rebuilt, and committed *inside* the VM, and reached this repo via
+`./scripts/vm-sync.sh pull` as a fast-forward — carrying the `Michael Arnoldus
+<chime@mu.dk>` identity that the very first in-VM rebuild had installed (§1).
+
+## 8. Run `nix flake check` inside the VM, not on the Mac
 
 Phase 1 ran it on macOS, where it needs the linux-builder up. Inside the guest it is a
 native `aarch64-linux` evaluation: no builder, no nesting, and it finishes in seconds.
@@ -229,7 +269,7 @@ It omits `aarch64-darwin` (the `linux-builder` package), which the Mac still has
 with `--all-systems` — but for everything Phases 3–5 will touch, the guest is the right
 place to run it.
 
-## 8. Settled for later phases — do not re-litigate
+## 9. Settled for later phases — do not re-litigate
 
 - **The repo lives at `~/bento` in the guest, and it is a real git repo with no `origin`.**
   Its only relationship to the host is that the host has it as a remote named `vm`.
