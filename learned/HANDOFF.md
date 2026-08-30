@@ -86,11 +86,28 @@ Full detail in `learned/phase-4.md`. Phase 5 adds ghostty, chromium, neovim and 
    (`phase-4.md` §2). If a Phase 5 app appears invisible, that is the shape of the bug —
    check its toolkit before you check your config.
 
-2. **Chromium and ghostty are the two packages most likely to want a source build.**
-   PLAN-v1 risk #2 forbids that in the VM. Check *before* installing, with the probe Phase 4
-   used on every package:
-   `nix build --dry-run nixpkgs#chromium` → "will be fetched" is fine, "will be built" is not.
-   Substituting Firefox for Chromium is pre-authorised by the plan; note it if you do.
+2. **PLAN-v1 risk #2 is already measured for you — and it fires in exactly one place.**
+   Probed in the guest at the end of Phase 4 with
+   `nix build --dry-run nixpkgs#<attr>` ("will be fetched" is fine, "will be built" is not):
+
+   | Package | nixpkgs | Verdict |
+   |---|---|---|
+   | `ghostty` | 1.3.1 | ✅ fetched (16 MiB) — **no substitution needed** |
+   | `chromium` | 152.0.7977.64 | ✅ fetched (200 MiB) — **no Firefox substitution needed** |
+   | `neovim` | 0.12.5 | ✅ fetched |
+   | `ripgrep` / `gh` / `fd` | — | ✅ fetched (fd is already in the store) |
+   | `claude-code` | 2.1.245 | ✅ two trivial derivations (a JS-bundle fetch + its wrapper), not a compile |
+   | **`nodejs`** | **24.19.0** | ❌ **builds from source** |
+
+   So the *one* thing to avoid is the plain `nodejs` PLAN-v1 §5 names. `nodejs-slim` is
+   fully substitutable and `nodejs_20` is already in the guest's store; pick one and note
+   the substitution. Re-run the probes rather than trusting this table — nixpkgs moves.
+
+   Note also that **`nix build nixpkgs#claude-code` fails on its own** with an assertion
+   from `lib/customisation.nix` — that is only the unfree licence gate, because the bare
+   `nixpkgs#` registry reference does not inherit the flake's
+   `nixpkgs.config.allowUnfree = true`. Inside `nixosConfigurations.bento-vm` it is fine.
+   To probe it by hand: `NIXPKGS_ALLOW_UNFREE=1 nix build --dry-run --impure nixpkgs#claude-code`.
 
 3. **The Hypr* ecosystem's newer tools assume a real GPU.** hyprpaper 0.8 segfaults here —
    it asks GBM for `ABGR16161616F`, which virtio-gpu does not have, and dereferences the
