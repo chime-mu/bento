@@ -82,8 +82,54 @@ at the screen can, print exact instructions for me to verify) before the phase i
 | QEMU | 11.1.1 ✅ installed via `brew install qemu` |
 | Accelerators | `hvf`, `tcg` ✅ — hvf available as planned |
 | EFI firmware | `/opt/homebrew/share/qemu/edk2-aarch64-code.fd` (64 MiB) |
-| Nix | ❌ not yet installed — **blocked on my sudo password** |
+| Nix | ✅ **Determinate Nix 3.22.2** (Nix 2.35.2), installed via `nix-installer --determinate` |
+| Linux builder | ❌ **NOT working** — `platform mismatch: Required system 'aarch64-linux', Current system 'aarch64-darwin'` |
 | git repo | ✅ initialized, `main`, first commit `9dfd1fe` |
+
+**⚠️ Acceptance-criterion correction.** The original criterion —
+`nix build nixpkgs#legacyPackages.aarch64-linux.hello` — is **worthless as a test**: it
+passes on a Mac with no Linux builder at all, because `hello` is simply *substituted*
+from cache.nixos.org. Never use it. The valid probe forces an unsubstitutable build:
+
+```
+nix build --impure --no-link --expr \
+  'with import <nixpkgs> { system = "aarch64-linux"; };
+   runCommand "probe-'"$(date +%s)"'" {} "uname -m > $out"'
+```
+
+**Linux-builder state (measured 2026-08-30):**
+- `determinate-nixd version` lists only `lazy-trees` — **`native-linux-builder` is not
+  enabled**.
+- But the machinery is all present: `/usr/local/bin/determinate-nixd` is signed by
+  Determinate Systems (Team `X3JQ4VPJZ6`) and **carries the
+  `com.apple.security.virtualization` entitlement**, and a hidden
+  `determinate-nixd builder <BUILDER_JSON>` subcommand exists with `--memory-size`,
+  `--cpu-count`, `--kernel`, `--initrd` options.
+- `nix config show` knows `external-builders` (currently `[]`).
+- FlakeHub auth: **logged-out**. `trusted-users = root` only, so the setting cannot be
+  overridden from the CLI by `chime` — it must go in a root-owned config file.
+- Determinate manages `/etc/nix/nix.conf` (it is overwritten on upgrade); user config
+  belongs in **`/etc/nix/nix.custom.conf`**, which `nix.conf` pulls in via
+  `!include nix.custom.conf`.
+- Daemon label for restarts: **`systems.determinate.nix-daemon`**.
+
+**Next action — try (a), fall back to (b):**
+
+- a) Enable the native builder by hand (one sudo command + daemon restart):
+  ```
+  sudo tee -a /etc/nix/nix.custom.conf >/dev/null <<'EOF'
+  extra-experimental-features = external-builders
+  external-builders = [{"systems":["aarch64-linux","x86_64-linux"],"program":"/usr/local/bin/determinate-nixd","args":["builder"]}]
+  EOF
+  sudo launchctl kickstart -k system/systems.determinate.nix-daemon
+  ```
+  Then re-run the probe above. If it still refuses, the feature is account-gated —
+  try `determinate-nixd login` (FlakeHub), and if that fails go to (b).
+- b) **`darwin.linux-builder`** — the free, account-free, well-documented fallback: a
+  NixOS builder VM registered in `/etc/nix/machines`, per the
+  [nixpkgs manual](https://nixos.org/manual/nixpkgs/unstable/#sec-darwin-builder).
+  Also requires adding `chime` to `trusted-users` in `nix.custom.conf`. It uses QEMU,
+  which is already installed.
 
 **Note — there is no `edk2-aarch64-vars.fd`** shipped by Homebrew (only `edk2-arm-vars.fd`).
 Phase 1 must create a writable 64 MiB vars pflash itself, e.g.
@@ -123,10 +169,9 @@ Installer verified as v3.22.2, flags confirmed against `nix-installer install --
 
 **Step 4 — `git init`:** ✅ done.
 
-**Acceptance:** `nix build nixpkgs#legacyPackages.aarch64-linux.hello` succeeds on the
-Mac (this is the real test of Step 2 — it must produce a Linux binary, not fail with
-"a 'aarch64-linux' with features {} is required to build"); `qemu-system-aarch64
---version` prints ✅.
+**Acceptance:** the unsubstitutable `runCommand` probe above builds successfully on the
+Mac (⬅ *this*, not the `hello` test, which is meaningless — see the correction above);
+`qemu-system-aarch64 --version` prints ✅.
 
 ### Phase 1 — Flake skeleton + bootable headless image
 
