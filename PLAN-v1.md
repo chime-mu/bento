@@ -143,18 +143,29 @@ is **no chicken-and-egg problem**; the builder itself needs no Linux builder.
    — the documented `org.nixos.nix-daemon` label **does not exist** on Determinate Nix,
    so the stock command silently does nothing.
 
-All of this is encoded in **`scripts/setup-linux-builder.sh`** (idempotent; backs up
-`nix.custom.conf`; strips the dead `external-builders` config). Run it once:
+*Third deviation — deliberate:* upstream's `add-keys` shells out to **`sudo` on every
+launch** whenever `/etc/nix/builder_ed25519.pub` doesn't match its `./keys` dir (and its
+key dir is CWD-relative, so it re-prompts from a different directory). We instead
+generate a **stable keypair** under `~/.local/state/bento/builder-keys` and install it
+once, so the builder can afterwards be started **unattended and password-free** — which
+is what lets an agent run Phase 1's image build end to end.
+
+Encoded in two scripts:
+
+| Script | sudo? | Purpose |
+|---|---|---|
+| `scripts/setup-linux-builder.sh` | **yes, once** | keypair + `/etc/nix` credentials + `nix.custom.conf` + ssh config + daemon restart. Idempotent, backs up the old conf, strips the dead `external-builders` config. |
+| `scripts/start-linux-builder.sh` | no | starts the builder VM; `--check` reports whether `localhost:31022` is reachable. Disk image and keys live in `~/.local/state/bento`, out of the repo. |
 
 ```
-sudo ./scripts/setup-linux-builder.sh
-nix run nixpkgs#darwin.linux-builder    # separate terminal, LEAVE RUNNING
+sudo ./scripts/setup-linux-builder.sh   # once
+./scripts/start-linux-builder.sh        # whenever a macOS-side Linux build is needed
 ```
 
 The builder VM must be running for any macOS-side Linux build (i.e. Phase 1's image
-build). Stop it with `shutdown now` at its prompt. Note this is only needed to produce
-the *initial* image — per Phase 2, all later iteration happens inside the bento VM
-itself, which is natively `aarch64-linux` and needs no builder.
+build). Stop it with `shutdown now` at its prompt. This is only needed to produce the
+*initial* image — per Phase 2, all later iteration happens inside the bento VM itself,
+which is natively `aarch64-linux` and needs no builder at all.
 
 *Alternative if the QEMU builder proves slow:* `darwin.linux-builder-vz` is a drop-in
 replacement using Apple's Virtualization.framework (same port, same host key, same
