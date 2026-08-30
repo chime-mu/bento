@@ -22,10 +22,11 @@
 #      and `-display cocoa,gl=es` errors out. Plain virtio-gpu-pci is the only option
 #      there, and the guest renders in software (llvmpipe).
 #
-# `--gl` switches to the separately built, GL-capable QEMU that
-# `./scripts/build-qemu-gl.sh` installs under ~/.local/state/bento/qemu-gl — a patched
-# 10.1.2 linked against virglrenderer and ANGLE. The stock Homebrew binary stays exactly
-# where it is and remains the default, so a broken GL build can never cost us a bootable
+# So Phase 6 built a second QEMU — a patched 10.1.2 linked against virglrenderer and
+# ANGLE, installed by ./scripts/build-qemu-gl.sh under ~/.local/state/bento/qemu-gl. When
+# it is present it is used by default, because hosts/bento-vm/default.nix now assumes a
+# GPU. The stock Homebrew binary is never touched or replaced: it stays on PATH as the
+# `--no-gl` fallback, so a broken GL build can cost us performance but never a bootable
 # VM. See learned/phase-6.md.
 #
 # `--headless` drops the *window*, not the GPU. Phase 3 puts Hyprland on this machine, and
@@ -34,6 +35,12 @@
 # useless for exactly the phase that needs it most. QEMU renders the scanout into memory
 # whether or not anyone is looking at it — and `screendump` over QMP can then read it back,
 # so an agent with no screen can still see what the display shows (learned/phase-3.md §1).
+#
+# `--headless` implies software rendering, and that is not a limitation worth removing:
+# virtio-gpu-gl needs a display backend to get a GL context from, and `-display none` has
+# none. It is also the *useful* pairing, because under GL a QMP screendump comes back
+# black — the scanout is a GL texture by then and screendump only knows about the pixman
+# surface (learned/phase-6.md §3). Headless is how you photograph a boot failure.
 
 set -euo pipefail
 
@@ -73,7 +80,7 @@ while [[ $# -gt 0 ]]; do
     --memory) MEMORY="${2:?--memory needs an argument}"; shift 2 ;;
     --cpus) CPUS="${2:?--cpus needs an argument}"; shift 2 ;;
     --ssh-port) SSH_PORT="${2:?--ssh-port needs an argument}"; shift 2 ;;
-    -h|--help) sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; exit 2 ;;
   esac
 done

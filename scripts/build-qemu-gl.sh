@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bento — build a GL-capable qemu-system-aarch64 for the macOS host.
 #
-#   ./scripts/build-qemu-gl.sh            # build + install + codesign
+#   ./scripts/build-qemu-gl.sh            # build, install, verify the hvf entitlement
 #   ./scripts/build-qemu-gl.sh --check    # just report what is installed
 #   ./scripts/build-qemu-gl.sh --clean    # throw the source tree away first
 #
@@ -35,10 +35,15 @@
 # host, plus upgrades of 20 unrelated ones. `--disable-spice` costs a compile and
 # nothing else: every remaining dependency was already installed for Homebrew's qemu.
 #
-# Code signing is not optional. macOS gates hardware virtualization behind the
-# com.apple.security.hypervisor entitlement; Homebrew's qemu carries it, a freshly
-# built binary does not, and without it `-machine virt,accel=hvf` is refused. An
-# ad-hoc signature (`-s -`) is enough and needs no certificate and no sudo.
+# Code signing is not optional — but it is also not ours to do. macOS gates hardware
+# virtualization behind the com.apple.security.hypervisor entitlement, and without it
+# `-machine virt,accel=hvf` is refused. PLAN-v1 §6 and learned/phase-0.md §2 both expect
+# us to sign the binary; **QEMU signs itself**. `make install` runs
+# scripts/entitlement.sh with accel/hvf/entitlements.plist, so the step below is a check.
+#
+# Do not "fix" it into a real signing step. entitlement.sh also attaches pc-bios/qemu.rsrc
+# as a resource fork, and codesign refuses to re-sign a binary carrying one:
+# "resource fork, Finder information, or similar detritus not allowed".
 
 set -euo pipefail
 
