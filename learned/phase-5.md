@@ -335,10 +335,21 @@ part is usually the rest of the list of problems.
 looking at the picture. That answers "is something there?" but not "is it the right
 colour?", and macOS ships no PIL to ask with.
 
-A PNG is `zlib` plus five filter types, which is about forty lines of standard library. The
-throwaway used here reported that the ghostty window was 96.9 % `#1a1b26` — a *number*
-compared against `home/chime/theme/colors.nix`, rather than a judgement about a thumbnail.
-Worth rebuilding, or promoting into `scripts/`, the next time a phase has to prove a colour.
+A PNG is `zlib` plus five filter types, which is about forty lines of standard library. It
+reported that the ghostty window was 96.9 % `#1a1b26` — a *number* compared against
+`home/chime/theme/colors.nix`, rather than a judgement about a thumbnail.
+
+It started as a throwaway and is now **`scripts/screen-colors.py`**, next to the script
+whose output it reads:
+
+```bash
+./scripts/vm-screenshot.sh artifacts/shot.png
+./scripts/screen-colors.py artifacts/shot.png --hist    # the 12 commonest colours
+./scripts/screen-colors.py artifacts/shot.png 960,540   # one pixel
+```
+
+Phase 6 is the phase that will need it most — its entire acceptance criterion is a claim
+about rendering.
 
 ## 9. Smaller things worth carrying forward
 

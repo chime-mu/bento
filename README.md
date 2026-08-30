@@ -108,10 +108,20 @@ no window on screen:
 ./scripts/vm-screenshot.sh --type 'hyprctl monitors' --key ret
 ```
 
-This is how Phase 3's "boots into Hyprland" and Phase 4's "the launcher opens on
-Super+Space" were verified without a human at the monitor — including typing a password
-into the lock screen to check that PAM accepts it. Key names are QEMU's: Super is
-`meta_l`, Return is `ret`, Space is `spc`.
+This is how Phase 3's "boots into Hyprland", Phase 4's "the launcher opens on Super+Space"
+and Phase 5's "Ghostty, Chromium and Neovim all launch from the launcher" were verified
+without a human at the monitor — including typing a password into the lock screen to check
+that PAM accepts it. Key names are QEMU's: Super is `meta_l`, Return is `ret`, Space is
+`spc`.
+
+Looking at the picture answers *"is something there?"*. For *"is it the right colour?"* —
+a different question, and the one a theme change actually turns on — read the pixels back
+as numbers and compare them with `home/chime/theme/`:
+
+```bash
+./scripts/screen-colors.py artifacts/screen-*.png --hist    # the 12 commonest colours
+./scripts/screen-colors.py artifacts/screen-*.png 960,540   # one pixel
+```
 
 ## The desktop
 
@@ -312,6 +322,7 @@ bento/
     ├── make-wallpaper.py         # regenerate home/chime/theme/tokyo-night.png
     ├── run-vm.sh                 # boot it in QEMU
     ├── vm-screenshot.sh          # photograph the guest's screen / send it keystrokes
+    ├── screen-colors.py          # …and read the colours back out of that PNG, as numbers
     └── vm-sync.sh                # move commits between this repo and the VM's ~/bento
 ```
 

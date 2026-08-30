@@ -58,9 +58,10 @@ at. Check before assuming: `pgrep -fl qemu-system-aarch64`. Do not restart it ju
 either way.
 
 **Host and VM are in sync**, both trees clean — confirm with `./scripts/vm-sync.sh status`
-rather than trusting this file. The guest has been rebuilt 31 times on top of the Phase 1
-image. `bento doctor` (new in Phase 5) answers all of this in one screen, including whether
-the running system is the commit you are reading.
+rather than trusting this file. The guest has been rebuilt 32 times on top of the Phase 1
+image, and generation 32 was built from `122cc07`, which is `main`. **`bento doctor` (new
+in Phase 5) answers all of this in one screen** — run it first, over ssh; it reads only,
+and it says outright whether the running system is the commit you are reading.
 
 **`artifacts/bento.qcow2` is the live disk and there is no snapshot behind it.**
 `build-image.sh` replaces it outright and `bento gc --all` deletes the generations you
@@ -118,11 +119,19 @@ Full detail in `learned/phase-5.md`.
    is "GSK's *widget* rendering is broken here". If Phase 6 lands real GL, walker is the
    application to re-test the variable against — it is the one that actually depends on it.
 
-3. **Verify colours by sampling the scanout, not by looking at it.** `learned/phase-5.md`
-   §8 describes a forty-line pure-stdlib PNG reader (macOS has no PIL); it reported the
-   ghostty window as 96.9 % `#1a1b26` and turned "does it look right" into a number checked
-   against `home/chime/theme/colors.nix`. Phase 6's whole claim is about rendering, so it
-   will want this. It was a throwaway — rebuild it, or promote it into `scripts/`.
+3. **Verify colours by sampling the scanout, not by looking at it** (§8). Phase 6's whole
+   claim is about rendering, so this is the phase that most needs it:
+
+   ```bash
+   ./scripts/vm-screenshot.sh artifacts/shot.png
+   ./scripts/screen-colors.py artifacts/shot.png --hist    # the 12 commonest colours
+   ./scripts/screen-colors.py artifacts/shot.png 960,540   # one pixel
+   ```
+
+   It turns "does it look right" into a number checked against
+   `home/chime/theme/colors.nix` — Phase 5 used it to establish that a ghostty window was
+   96.9 % `#1a1b26` rather than merely dark. Pure standard library, because macOS has no
+   PIL.
 
 4. **`nix build --dry-run | tail` hides the verdict** (§9). "will be built" / "will be
    fetched" is the *first* line, before the path list. Grep for it.
