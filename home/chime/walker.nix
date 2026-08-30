@@ -19,6 +19,13 @@
 let
   theme = import ./theme;
   inherit (theme) colors font;
+
+  # **The one place the terminal is named is home/chime/hyprland.nix**, and this reads it
+  # back out of the evaluated configuration rather than repeating the string. A second
+  # literal would be a second thing to remember when `$terminal` changes, and the failure
+  # it produces is quiet: the launcher would keep working and just open the *other*
+  # terminal.
+  terminal = config.wayland.windowManager.hyprland.settings."$terminal";
 in
 {
   # **elephant indexes once, at startup, and nothing restarts it on a rebuild.**
@@ -44,10 +51,28 @@ in
   # `osConfig.system.path` and not `system.build.toplevel`: the latter depends on
   # home-manager's own generation, and asking for it from inside home-manager is an
   # infinite recursion.
-  systemd.user.services.elephant.Unit.X-Restart-Triggers = [
-    config.home.path
-    osConfig.system.path
-  ];
+  systemd.user.services.elephant = {
+    Unit.X-Restart-Triggers = [
+      config.home.path
+      osConfig.system.path
+    ];
+
+    # **Which terminal a `Terminal=true` desktop entry opens in.**
+    #
+    # `nvim.desktop` — and anything else that is a TUI — carries `Terminal=true`, and
+    # something has to decide what that means. elephant's answer is `$TERMINAL`, and
+    # failing that a hardcoded list of known terminal binaries that it scans for. That
+    # fallback is not ordered by preference: with both installed it picked **foot**,
+    # because `foot` comes before `ghostty` in the list, and the result was a launcher
+    # that opened Neovim in a different terminal from the one Super+Return gives you.
+    #
+    # Not `environment.sessionVariables`, which would be the obvious home for it: that
+    # lands in /etc/pam/environment and is read once when the PAM session opens, so it
+    # would need a guest **reboot** rather than a rebuild to take effect
+    # (learned/phase-4.md §7). On the unit it arrives with the restart the trigger above
+    # already causes.
+    Service.Environment = [ "TERMINAL=${terminal}" ];
+  };
 
   services.elephant = {
     enable = true;
