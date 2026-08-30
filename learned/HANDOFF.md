@@ -15,8 +15,10 @@ handoff; its findings now live in `learned/phase-3.md`.)
 > option doesn't exist in current nixpkgs, find the current equivalent and note the
 > substitution in your report and in `learned/phase-4.md`.
 >
-> Phase 4 runs *inside* the VM via the Phase 2 loop. Start with:
->   ./scripts/run-vm.sh --headless   # the GPU is attached even headless; this is enough
+> Phase 4 runs *inside* the VM via the Phase 2 loop. The VM is probably already running —
+> check with `pgrep -fl qemu-system-aarch64` before starting a second one:
+>   ./scripts/run-vm.sh --headless   # only if it is not up; the GPU is attached either way
+>   ./scripts/vm-sync.sh status      # who is ahead of whom
 >   ./scripts/vm-sync.sh push        # get this repo's HEAD into the VM
 >   ssh -p 2222 chime@localhost      # then: cd ~/bento, edit, `bento rebuild`
 > You do **not** need the linux builder or a new image.
@@ -33,17 +35,29 @@ handoff; its findings now live in `learned/phase-3.md`.)
 
 ## State to be aware of
 
-**Nothing is running.** The bento VM was powered off cleanly at the end of the Phase 3
-session; the linux-builder was never started, and Phase 4 does not need it.
+**The bento VM is running, windowed**, with a live Hyprland session that a human is looking
+at — it was left up deliberately at the end of the Phase 3 session, not forgotten. Check
+before assuming: `pgrep -fl qemu-system-aarch64`.
+
+Two consequences for Phase 4:
+
+- **Do not restart it just to get `--headless`.** There is no difference that matters: the
+  GPU is attached in both modes and `scripts/vm-screenshot.sh` works either way. The window
+  is a *bonus* here — a human can watch what you are building.
+- **A `bento rebuild` reloads that live session** (home-manager's Hyprland hook runs
+  `hyprctl reload`), which is what you want, but it means a broken config is visible to
+  whoever is watching. Nothing is destroyed by it; greetd is not restarted.
+
+The linux-builder is **not** running and Phase 4 does not need it.
 
 | What | How to start | Needed for Phase 4? |
 |---|---|---|
-| bento VM | `./scripts/run-vm.sh --headless` | **yes** — Phase 4 happens inside it |
+| bento VM | `./scripts/run-vm.sh` (windowed) or `--headless` | **yes** — already up |
 | `linux-builder` VM | `./scripts/start-linux-builder.sh` | no — only to rebuild the *image* |
 
-**Host and VM are in sync at `bc7ba6d`**, both trees clean, and the running system is
+**Host and VM are in sync at `50203ee`**, both trees clean, and the running system is
 stamped with that revision (`nixos-version --configuration-revision`). The guest is at
-generation 14, rebuilt fourteen times on top of the Phase 1 image.
+generation 15, rebuilt fifteen times on top of the Phase 1 image.
 
 **`artifacts/bento.qcow2` is the live disk and there is no snapshot behind it.**
 `build-image.sh` replaces it outright and `bento gc --all` deletes the generations you could
