@@ -48,6 +48,17 @@ in
     # and without it pipewire cannot take the realtime priority it asks for.
     security.rtkit.enable = true;
 
+    # The one thing hyprlock cannot do for itself. It authenticates through PAM, and with
+    # no `/etc/pam.d/hyprlock` it falls back to shelling out to `su` — which on this
+    # machine means the correct password is rejected, from a screen you cannot leave.
+    #
+    # This is the *only* line taken from nixpkgs' `programs.hyprlock` module. Enabling the
+    # whole module would also install hyprlock system-wide and turn on the NixOS
+    # `services.hypridle`, giving us a second idle daemon racing the home-manager one over
+    # the same session (home/chime/lock.nix). The config belongs to the user; the PAM
+    # stack is the only part that has to be the machine's.
+    security.pam.services.hyprlock = { };
+
     # Autologin straight into Hyprland: this is a dev VM whose whole premise is an agent
     # rebuilding it, and a password wall in front of the desktop only stands between the
     # agent and the thing it is meant to verify.

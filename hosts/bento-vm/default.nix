@@ -10,6 +10,7 @@
     ../../modules/core.nix
     ../../modules/bento-cli.nix
     ../../modules/desktop.nix
+    ../../modules/fonts.nix
   ];
 
   # Which `nixosConfigurations.<name>` `bento rebuild` applies. Stated here rather than

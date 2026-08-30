@@ -1,10 +1,18 @@
 # home-manager entry point for chime.
 #
-# Phase 3 added hyprland.nix. The rest of the desktop — waybar, walker, mako, the Tokyo
-# Night theme — lands in Phase 4, one file each, imported here.
+# One file per program, and `./theme` is not among them — it is a plain expression that
+# each of the others imports for its colours, font and wallpaper, not a module with
+# options of its own. Phase 5 adds ghostty.nix and neovim.nix here.
 { ... }:
 {
-  imports = [ ./hyprland.nix ];
+  imports = [
+    ./hyprland.nix
+    ./waybar.nix
+    ./walker.nix
+    ./mako.nix
+    ./hyprpaper.nix
+    ./lock.nix
+  ];
 
   home.stateVersion = "26.11";
   programs.home-manager.enable = true;

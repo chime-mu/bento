@@ -12,6 +12,9 @@
   ...
 }:
 let
+  theme = import ./theme;
+  inherit (theme) colors;
+
   # home-manager sees the NixOS configuration as `osConfig`, which is how a *user* setting
   # can key off a *machine* fact. Both uses below are the same question — "is there a GPU?"
   # — and answering it from the host rather than hardcoding it is what keeps this file
@@ -51,6 +54,9 @@ in
       # Phase 5 replaces this with ghostty and keeps foot as the fallback. One variable, so
       # that is a one-line change and every bind follows it.
       "$terminal" = "foot";
+      # Phase 4's launcher. walker runs as a GApplication service (home/chime/walker.nix),
+      # so this is a message to a process that is already up, not a cold GTK4 start.
+      "$launcher" = "walker";
 
       # No hardcoded mode: virtio-gpu ships an EDID (edid=on by default) carrying the
       # xres/yres that scripts/run-vm.sh asks for, so `preferred` tracks the QEMU window
@@ -63,6 +69,11 @@ in
         gaps_out = 8;
         border_size = 2;
         layout = "dwindle";
+
+        # Tokyo Night, through the role names in home/chime/theme/colors.nix. The active
+        # border is a two-stop gradient — hyprlang's own syntax, one string, not a list.
+        "col.active_border" = "${colors.rgba colors.hex.accent "ff"} ${colors.rgba colors.hex.accentAlt "ff"} 45deg";
+        "col.inactive_border" = colors.rgba colors.hex.border "aa";
       };
 
       # Everything expensive is off while we are on llvmpipe: blur and shadows are
@@ -82,11 +93,13 @@ in
         # care about not drawing is already not drawn. Setting the old name is not ignored,
         # it is an error printed across the top of the screen at every launch.
         #
-        # Deliberately *not* disabling the Hyprland logo yet. Until Phase 4 lands a
-        # wallpaper it is the only thing on an empty screen that distinguishes "Hyprland is
-        # running" from "the VM hung during boot" — which is exactly the question Phase 3's
-        # acceptance asks a human to answer by looking at the QEMU window.
-        disable_hyprland_logo = false;
+        # Off as of Phase 4, in the same commit that lands hyprpaper and the wallpaper —
+        # which is the condition learned/phase-3.md §8 attached to turning it off. Through
+        # Phase 3 the logo was the only mark on an empty screen that distinguished "the
+        # compositor is running" from "the VM hung during boot"; now the wallpaper and the
+        # bar answer that question, and better.
+        disable_hyprland_logo = true;
+        disable_splash_rendering = true;
       };
 
       cursor = {
@@ -104,12 +117,12 @@ in
         accel_profile = "flat";
       };
 
-      # Omarchy's scheme, as far as Phase 3 has software to bind to. Super+Space (the
-      # launcher) arrives with walker in Phase 4, and Super+B (the browser) with chromium
-      # in Phase 5 — they are absent rather than bound to a placeholder, so that a key that
-      # does nothing means "not built yet" instead of "broken".
+      # Omarchy's scheme, as far as there is software to bind to. Super+B (the browser)
+      # arrives with chromium in Phase 5 and is absent rather than bound to a placeholder,
+      # so that a key which does nothing means "not built yet" instead of "broken".
       bind = [
         "$mod, RETURN, exec, $terminal"
+        "$mod, SPACE, exec, $launcher"
         "$mod, W, killactive,"
         "$mod, F, fullscreen, 0"
         "$mod, V, togglefloating,"
@@ -132,6 +145,12 @@ in
         # Writes the whole output to a timestamped PNG. The same tool an agent uses over
         # ssh to see this desktop, bound where a human can reach it.
         ''$mod SHIFT, S, exec, grim "$HOME/Pictures/bento-$(date +%Y%m%d-%H%M%S).png"''
+
+        # Locks now. hypridle locks on its own after 30 minutes (home/chime/lock.nix);
+        # this is the deliberate one. It goes through logind rather than calling hyprlock
+        # directly so that both routes into the lock screen are the same code path —
+        # hypridle owns `lock_cmd` and answers logind's Lock signal.
+        "$mod, L, exec, loginctl lock-session"
 
         # Ends the session. greetd does not restart into the autologin, so this drops to
         # agreety's login prompt rather than looping back into a new Hyprland.
