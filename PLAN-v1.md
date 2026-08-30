@@ -328,7 +328,37 @@ Goal: the agent-friendly workflow — change the OS without rebuilding the image
 **Acceptance:** editing `modules/core.nix` inside the VM (e.g. add a package) and
 running `bento rebuild` makes the package available without re-imaging.
 
-### Phase 3 — Wayland + Hyprland desktop (software rendering)
+### Phase 3 — Wayland + Hyprland desktop (software rendering) — ✅ **COMPLETE (2026-08-30)**
+
+> 📓 **Full findings log: [`learned/phase-3.md`](learned/phase-3.md)** — read it before
+> Phase 4. It covers how an agent takes a screenshot of the VM and presses keys on it
+> without a human, why *both* software-rendering environment variables below are wrong (one
+> inert, one an active regression), what `programs.hyprland.enable` already configures for
+> you, and the two Hyprland config spellings that are now errors.
+
+**Acceptance passed — including the two criteria that were expected to need a human at the
+screen.** The VM boots straight into Hyprland as `chime` with no password; Super+Return,
+*pressed on the emulated keyboard from the host*, opens a `foot` terminal; and
+`echo $XDG_SESSION_TYPE` **typed into that terminal** prints `wayland`. All three were read
+back off the QEMU scanout with a QMP `screendump`.
+
+**Three substitutions from the steps below, all deliberate — see the findings log:**
+
+1. **Neither software-rendering environment variable is set.**
+   `WLR_RENDERER_ALLOW_SOFTWARE` is read by nothing — Hyprland 0.56 has no wlroots in it,
+   it renders through aquamarine (`AQ_*`). `LIBGL_ALWAYS_SOFTWARE=1` is worse than useless:
+   it hands mesa's EGL a device with no DRM node, aquamarine then fails to build its
+   renderer and retries every commit — **8504 renderer failures and a 7.8 MB log in two
+   minutes, with a desktop that looks perfectly fine**. Unset, aquamarine falls back from
+   the primary node to the render node and mesa reaches llvmpipe by itself: 12 KB, 0
+   renderer errors. `bento.desktop.softwareRendering` survives as a statement about the
+   hardware that the home-manager config reads, not as an environment.
+2. **`vulkan-swrast` no longer exists in nixpkgs** — lavapipe ships inside mesa, which
+   `hardware.graphics.enable` already installs. Nothing was substituted for it; the package
+   list is simply shorter.
+3. **`run-vm.sh --headless` keeps the virtio-gpu**, dropping only the window. Without a GPU
+   there is no `/dev/dri/card0` for a compositor to bind. Note this renumbers the PCI slots:
+   the first boot after the change lands in the UEFI Shell until `--reset-vars`.
 
 Goal: log in and land in Hyprland inside the QEMU window.
 
@@ -376,7 +406,9 @@ trio, Tokyo Night theme.
    Omarchy-style theme switcher (out of scope for v1).
 
 **Acceptance:** screenshot of the desktop shows themed bar, launcher opens with
-Super+Space, `notify-send test` shows a themed notification.
+Super+Space, `notify-send test` shows a themed notification. *(All three are now directly
+executable by the agent: `./scripts/vm-screenshot.sh --key meta_l-spc` presses the bind and
+photographs the result — see `learned/phase-3.md` §1.)*
 
 ### Phase 5 — My software + the agent
 

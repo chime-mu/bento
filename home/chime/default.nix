@@ -1,10 +1,11 @@
 # home-manager entry point for chime.
 #
-# Near-empty by design in Phase 1. The desktop — hyprland, waybar, walker, mako, the
-# Tokyo Night theme — lands in Phases 3 and 4. It exists this early so the home-manager
-# wiring is already proven before there is anything complicated inside it to blame.
+# Phase 3 added hyprland.nix. The rest of the desktop — waybar, walker, mako, the Tokyo
+# Night theme — lands in Phase 4, one file each, imported here.
 { ... }:
 {
+  imports = [ ./hyprland.nix ];
+
   home.stateVersion = "26.11";
   programs.home-manager.enable = true;
 

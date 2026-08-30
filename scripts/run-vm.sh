@@ -17,6 +17,13 @@
 #   2. This QEMU has no OpenGL compiled in: virtio-gpu-gl-pci does not exist and
 #      `-display cocoa,gl=es` errors out. Plain virtio-gpu-pci is the only option, and
 #      the guest renders in software. That is Phase 6's problem, not a flag we forgot.
+#
+# `--headless` drops the *window*, not the GPU. Phase 3 puts Hyprland on this machine, and
+# a compositor needs a DRM device to bind: with no virtio-gpu at all the guest has no
+# /dev/dri/card0 and the graphical session cannot start, which would make the headless mode
+# useless for exactly the phase that needs it most. QEMU renders the scanout into memory
+# whether or not anyone is looking at it — and `screendump` over QMP can then read it back,
+# so an agent with no screen can still see what the display shows (learned/phase-3.md §1).
 
 set -euo pipefail
 
@@ -25,6 +32,13 @@ ARTIFACTS="${REPO_ROOT}/artifacts"
 DISK="${ARTIFACTS}/bento.qcow2"
 VARS="${ARTIFACTS}/edk2-aarch64-vars.fd"
 CODE="/opt/homebrew/share/qemu/edk2-aarch64-code.fd"
+QMP_SOCK="${ARTIFACTS}/qmp.sock"
+
+# virtio-gpu's own default is 1280x800, and with edid=on (the default) that is what the
+# guest's EDID advertises and what Hyprland picks as the preferred mode. 1080p is a
+# friendlier desktop; there is no cost, since nothing is being scanned out by hardware.
+GPU_XRES="1920"
+GPU_YRES="1080"
 
 MEMORY="8G"
 CPUS="4"
@@ -65,13 +79,17 @@ if [[ ! -f ${VARS} ]]; then
   dd if=/dev/zero of="${VARS}" bs=1m count=64 status=none
 fi
 
-display_args=(-device virtio-gpu-pci -display cocoa)
+display_args=(-display cocoa)
 if [[ ${HEADLESS} -eq 1 ]]; then
   display_args=(-display none)
 fi
 
+# A stale unix socket from a killed VM makes QEMU exit with "Address already in use".
+rm -f "${QMP_SOCK}"
+
 echo "==> Booting bento (${CPUS} cpus, ${MEMORY}, ssh on localhost:${SSH_PORT})"
 echo "    serial console follows; Ctrl-A X to kill the VM"
+echo "    QMP on ${QMP_SOCK} (screendump, sendkey)"
 echo
 
 exec qemu-system-aarch64 \
@@ -83,7 +101,9 @@ exec qemu-system-aarch64 \
   -drive "if=pflash,format=raw,readonly=on,file=${CODE}" \
   -drive "if=pflash,format=raw,file=${VARS}" \
   -drive "if=virtio,format=qcow2,file=${DISK}" \
+  -device "virtio-gpu-pci,xres=${GPU_XRES},yres=${GPU_YRES}" \
   "${display_args[@]}" \
+  -qmp "unix:${QMP_SOCK},server=on,wait=off" \
   -device qemu-xhci \
   -device usb-kbd \
   -device usb-tablet \
