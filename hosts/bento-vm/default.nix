@@ -18,12 +18,26 @@
   # left to the module default, because this is the one fact only the host knows.
   bento.cli.configuration = "bento-vm";
 
-  # There is no GPU behind this machine's virtio-gpu: the host's Homebrew QEMU has no
-  # OpenGL compiled in, so there is no VirGL to accelerate through and llvmpipe is the only
-  # renderer available (learned/phase-0.md §2 — measured, not assumed). Stated here because
-  # it is a fact about *this host*, and the desktop module is meant to be reusable by a
-  # bare-metal one that will not set it.
-  bento.desktop.softwareRendering = true;
+  # There *is* a GPU behind this machine's virtio-gpu, as of Phase 6. The host's Homebrew
+  # QEMU still has no OpenGL in it, but `./scripts/build-qemu-gl.sh` builds one that does,
+  # and `./scripts/run-vm.sh` boots with `virtio-gpu-gl-pci` whenever that binary exists.
+  # The guest then reaches Metal: mesa's virgl driver → virglrenderer → ANGLE → Metal on
+  # the M4, which `glxinfo -B` reports as
+  #
+  #   virgl (ANGLE (Apple, Apple M4, OpenGL 4.1 Metal - 90.5))   Accelerated: yes
+  #
+  # so blur, shadows and animations are back on (learned/phase-6.md).
+  #
+  # Note what this option can and cannot express. It is evaluated when the system is
+  # built; whether a GPU is present is decided when the VM is launched. One disk image
+  # serves both, so this is a statement about the *intended* way to run this host, not a
+  # detected fact. `./scripts/run-vm.sh --no-gl` still boots and still works — the
+  # compositor falls back to llvmpipe on its own, exactly as it did through Phases 3-5 —
+  # it is just sluggish, because the effects below are compiled in and now cost CPU.
+  # Nothing *breaks* in that mode, and that is deliberate: the one setting whose absence
+  # would break it, `GSK_RENDERER=cairo`, was moved out of this option and is now
+  # unconditional (learned/phase-6.md §4).
+  bento.desktop.softwareRendering = false;
 
   # The release this machine was first installed from. Never bump it to follow nixpkgs —
   # it exists precisely to keep stateful defaults (databases, service layouts) stable

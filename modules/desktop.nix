@@ -35,9 +35,10 @@ in
     effects that cost a full-screen shader pass each frame: animations, blur, shadows,
     hardware cursors.
 
-    It sets exactly one environment variable, `GSK_RENDERER=cairo`, and only because that
-    one was measured — GTK 4 has no working renderer here otherwise (see the
-    sessionVariables comment below). Neither of the two that PLAN-v1 §3 asks for is set:
+    It sets **no** environment variables. `GSK_RENDERER=cairo` used to hang off it and no
+    longer does: that variable has to be right in both rendering modes, because this
+    option is fixed when the system is built and the GPU appears or not when the VM is
+    launched (learned/phase-6.md §4). Neither of the two that PLAN-v1 §3 asks for is set:
     one is a no-op and the other an active regression (learned/phase-3.md §2). Nothing
     else has to be told to fall back — mesa reaches llvmpipe by itself once the GPU
     refuses a GL context
@@ -156,7 +157,21 @@ in
     # specific variables that were copied from another distribution's guest overlay and
     # never measured here; this one was measured here, four ways, and the alternative is a
     # launcher nobody can see. Waybar is untouched by it — GTK 3 draws through cairo
-    # already — and if Phase 6 ever lands real GL, this is one of the lines to delete.
-    // lib.optionalAttrs config.bento.desktop.softwareRendering { GSK_RENDERER = "cairo"; };
+    # already.
+    #
+    # **Phase 6 landed GL and this line still does not move.** `learned/phase-4.md` §8
+    # listed it for deletion, and that was written before we knew the shape of the
+    # problem: `softwareRendering` is decided when the *system is built*, and whether
+    # there is a GPU is decided when the *VM is launched* — `run-vm.sh --gl` or not. One
+    # disk image serves both, so a variable gated on the build-time option is wrong in
+    # whichever mode it was not built for, and being wrong here means an invisible
+    # launcher (learned/phase-6.md §4).
+    #
+    # So it is set unconditionally, because cairo is the one value that is *correct in
+    # both*: it is the only renderer that works without a GPU, and it works perfectly
+    # well with one — GTK 4 widget chrome is a trivial amount of drawing next to the
+    # compositor's own. The cost is theoretical; the alternative is a mode where
+    # Super+Space opens nothing.
+    // { GSK_RENDERER = "cairo"; };
   };
 }
