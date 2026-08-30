@@ -386,7 +386,40 @@ Goal: log in and land in Hyprland inside the QEMU window.
 **Acceptance:** VM boots straight into Hyprland; a terminal opens with Super+Return;
 `echo $XDG_SESSION_TYPE` prints `wayland`. Expect it to be sluggish — that's fine.
 
-### Phase 4 — Omarchy visual foundations
+### Phase 4 — Omarchy visual foundations — ✅ **COMPLETE (2026-08-30)**
+
+> 📓 **Full findings log: [`learned/phase-4.md`](learned/phase-4.md)** — read it before
+> Phase 5. It covers why GTK 4 draws nothing here without `GSK_RENDERER=cairo`, why
+> hyprpaper segfaults on virtio-gpu, why Nerd Font glyphs must be written as codepoints
+> rather than pasted, and the two hyprlock settings that make a working lock screen look
+> broken.
+
+**Acceptance passed, all three criteria, none handed to a human.** The bar is themed and
+carries workspaces / clock / cpu / memory / network; Super+Space — *pressed on the emulated
+keyboard from the host* — opens walker, and typing `htop` into it launches htop; and
+`notify-send` produces themed notifications, differently themed at critical urgency. Each
+was read back off the QEMU scanout with a QMP `screendump`. `nix flake check` is green in
+11 s and `hyprland.log` is still 12 KB with 5 `ERR` — the clean baseline from Phase 3.
+
+**Four substitutions from the steps below, all deliberate — see the findings log:**
+
+1. **`swaybg` replaces hyprpaper.** hyprpaper 0.8.4 asks aquamarine's GBM allocator for
+   `ABGR16161616F`, virtio-gpu has no such format, and it dereferences the resulting null:
+   `status=11/SEGV`, every time, within a second. `AQ_*` overrides change nothing. swaybg
+   is `wl_shm` + cairo — no GBM, no EGL — which is the right architecture for a machine
+   with no GPU anyway.
+2. **`GSK_RENDERER=cairo` *is* set**, gated behind `bento.desktop.softwareRendering`, in
+   spite of `learned/phase-3.md` §8's "no software-rendering environment variables". GTK 4
+   maps its window and draws nothing here: radv claims virtio-gpu and fails, then GSK's GL
+   renderer hits `DRI2: failed to create screen` and does not fall back to the render node
+   the way aquamarine does. Measured four ways against the actual scanout.
+3. **foot is themed in this phase**, not Phase 5, and moved from
+   `environment.systemPackages` into home-manager. It is the only window there is to open,
+   and an unthemed terminal is the surface that gives away an otherwise coherent desktop.
+4. **walker was *not* substituted** — risk #5 did not fire. `nix build --dry-run` reports 7
+   paths fetched and 0 built on aarch64, so fuzzel stays unused. Note that walker 2.x is
+   two processes: the GTK4 front end plus the **elephant** daemon, which every pre-2.0
+   guide predates.
 
 Goal: it should *look* like Omarchy's family: same fonts, same bar/launcher/notification
 trio, Tokyo Night theme.

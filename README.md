@@ -23,7 +23,7 @@ v1 runs as a QEMU virtual machine on an Apple Silicon MacBook. Bare metal comes 
 | 1 — Flake skeleton + bootable headless image | ✅ **complete** |
 | 2 — Iteration loop from inside the VM | ✅ **complete** |
 | 3 — Wayland + Hyprland (software rendering) | ✅ **complete** |
-| 4 — Omarchy visual foundations | ⬜ |
+| 4 — Omarchy visual foundations | ✅ **complete** |
 | 5 — My software + the agent | ⬜ |
 | 6 — GPU acceleration (stretch, allowed to fail) | ⬜ |
 
@@ -36,6 +36,7 @@ v1 runs as a QEMU virtual machine on an Apple Silicon MacBook. Bare metal comes 
 | **[`learned/phase-1.md`](learned/phase-1.md)** | Measured findings from Phase 1 — why the image is built with nixpkgs' own `image.modules` and not `nixos-generators`, and what the guest needs to boot on this host. |
 | **[`learned/phase-2.md`](learned/phase-2.md)** | Measured findings from Phase 2 — the two loops, why the host and the VM are two git repos rather than one 9p share, and which files a rebuild can and cannot see. |
 | **[`learned/phase-3.md`](learned/phase-3.md)** | Measured findings from Phase 3 — how to screenshot and type into the VM without a human, and why both of the software-rendering environment variables everyone recommends are wrong here. |
+| **[`learned/phase-4.md`](learned/phase-4.md)** | Measured findings from Phase 4 — why GTK 4 draws nothing without `GSK_RENDERER=cairo`, why hyprpaper segfaults on virtio-gpu, and why Nerd Font glyphs have to be written as codepoints. |
 
 ## Host setup
 
@@ -85,6 +86,11 @@ bind, and QEMU renders the screen into memory whether or not anyone is watching.
 password is `bento`; the host's `~/.ssh/id_ed25519` is already authorized, so SSH needs no
 password.
 
+Expect step 2 to take a while the first time. It runs on the builder VM, and the last
+stage of it — laying out the partitions and installing systemd-boot — runs a *second*,
+nested Linux VM that has no KVM to accelerate it. Everything after Phase 2 happens inside
+the bento VM instead, where no builder is involved at all.
+
 If the VM ever comes up at a `Shell>` prompt instead of booting, the EFI variable store has
 a stale boot entry — most likely because the emulated hardware changed underneath it.
 `./scripts/run-vm.sh --reset-vars` clears it.
@@ -101,19 +107,26 @@ no window on screen:
 ./scripts/vm-screenshot.sh --type 'hyprctl monitors' --key ret
 ```
 
-This is how Phase 3's "boots into Hyprland" and "Super+Return opens a terminal" were
-verified without a human at the monitor. Key names are QEMU's: Super is `meta_l`, Return is
-`ret`, Space is `spc`.
+This is how Phase 3's "boots into Hyprland" and Phase 4's "the launcher opens on
+Super+Space" were verified without a human at the monitor — including typing a password
+into the lock screen to check that PAM accepts it. Key names are QEMU's: Super is
+`meta_l`, Return is `ret`, Space is `spc`.
 
 ## The desktop
 
-Phase 3 landed Hyprland. The VM boots straight into it — greetd autologins `chime`, no
-password — and the session runs on llvmpipe, because this host's QEMU has no OpenGL at all
+The VM boots straight into Hyprland — greetd autologins `chime`, no password — and the
+session runs on llvmpipe, because this host's QEMU has no OpenGL at all
 (`learned/phase-0.md` §2). Expect it to be sluggish; that is Phase 6's problem.
+
+Phase 4 added the Omarchy foundations on top: **waybar** across the top, **walker** on
+Super+Space (with **elephant** behind it), **mako** for notifications, **hyprlock** +
+**hypridle**, and **swaybg** holding a generated Tokyo Night wallpaper.
 
 | Key | Does |
 |---|---|
 | `Super+Return` | terminal (`foot` for now; ghostty in Phase 5) |
+| `Super+Space` | launcher |
+| `Super+L` | lock |
 | `Super+W` | close window |
 | `Super+F` / `Super+V` | fullscreen / toggle floating |
 | `Super+1..9`, `Super+0` | workspaces (with `Shift` to move the window there) |
@@ -121,14 +134,17 @@ password — and the session runs on llvmpipe, because this host's QEMU has no O
 | `Super+Shift+S` | screenshot to `~/Pictures` |
 | `Super+Shift+Q` | quit Hyprland, back to a text login |
 
-There is deliberately no bar, launcher or wallpaper yet — those are Phase 4. The Hyprland
-logo on the empty desktop is left on until then, because it is the one thing that
-distinguishes a running compositor from a hung boot.
+Every colour on that desktop comes from `home/chime/theme/` — a palette, a set of *roles*
+that the configs actually read, and the ANSI 16 for terminals. Swapping themes later means
+another file exporting the same role names. `Super+B` is deliberately unbound until
+chromium arrives in Phase 5.
 
-Expect step 2 to take a while the first time. It runs on the builder VM, and the last
-stage of it — laying out the partitions and installing systemd-boot — runs a *second*,
-nested Linux VM that has no KVM to accelerate it. Everything after Phase 2 happens inside
-the bento VM instead, where no builder is involved at all.
+The wallpaper is generated rather than downloaded, so the repo carries no image of unknown
+provenance:
+
+```bash
+python3 scripts/make-wallpaper.py     # -> home/chime/theme/tokyo-night.png, deterministic
+```
 
 ## The two loops
 
@@ -220,20 +236,30 @@ bento/
 ├── modules/
 │   ├── core.nix                  # users, ssh, nix settings, locale — host-agnostic
 │   ├── bento-cli.nix             # the `bento` command: rebuild / update / gc
-│   └── desktop.nix               # Hyprland, greetd autologin, the graphical session
+│   ├── desktop.nix               # Hyprland, greetd autologin, the graphical session
+│   └── fonts.nix                 # CaskaydiaMono Nerd Font + fallbacks
 ├── home/chime/
 │   ├── default.nix               # home-manager entry point
-│   └── hyprland.nix              # keybindings, and what to switch off with no GPU
+│   ├── hyprland.nix              # keybindings, and what to switch off with no GPU
+│   ├── foot.nix                  # the terminal, themed
+│   ├── waybar.nix                # the bar
+│   ├── walker.nix                # the launcher + elephant
+│   ├── mako.nix                  # notifications
+│   ├── wallpaper.nix             # swaybg (hyprpaper crashes here — phase-4 §3)
+│   ├── lock.nix                  # hyprlock + hypridle
+│   └── theme/                    # colors.nix (palette, roles, ANSI 16) + wallpaper
 ├── PLAN-v1.md                    # the plan
 ├── learned/                      # findings log, one file per completed phase
 │   ├── phase-0.md
 │   ├── phase-1.md
 │   ├── phase-2.md
-│   └── phase-3.md
+│   ├── phase-3.md
+│   └── phase-4.md
 └── scripts/
     ├── setup-linux-builder.sh    # one-time root setup of the aarch64-linux builder
     ├── start-linux-builder.sh    # start/check the builder VM (no sudo)
     ├── build-image.sh            # build the qcow2 and stage artifacts/bento.qcow2
+    ├── make-wallpaper.py         # regenerate home/chime/theme/tokyo-night.png
     ├── run-vm.sh                 # boot it in QEMU
     ├── vm-screenshot.sh          # photograph the guest's screen / send it keystrokes
     └── vm-sync.sh                # move commits between this repo and the VM's ~/bento
