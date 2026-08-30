@@ -6,11 +6,30 @@
 #   ./scripts/vm-screenshot.sh --key meta_l-ret      # press a key first, then capture
 #   ./scripts/vm-screenshot.sh --key ctrl-alt-f2 --delay 2 out.png
 #   ./scripts/vm-screenshot.sh --type 'ls -la' --key ret   # type a string, then press enter
+#   ./scripts/vm-screenshot.sh --scanout             # force the QMP path (see below)
+#   ./scripts/vm-screenshot.sh --guest               # force the grim path
 #
-# This reads QEMU's own scanout over the QMP socket that run-vm.sh opens, so it works with
-# `--headless` and with no window on screen at all — which is the point. It is the outermost
-# possible check: not "does the compositor think it drew something", but "what would a human
-# looking at the QEMU window see".
+# There are two ways to photograph this machine, and which one is correct depends on how
+# the VM was launched. **The default picks for you**; both `--key` and `--type` work either
+# way, because input always goes through QEMU's emulated USB keyboard over QMP.
+#
+#   scanout  QMP `screendump` writes QEMU's own scanout to a PNG. The outermost possible
+#            check — not "does the compositor believe it drew something" but "what would a
+#            human looking at the QEMU window see" — and it works under `--headless`, with
+#            no window on screen at all.
+#
+#   guest    `grim` inside the guest, over ssh. One layer further in: it asks the
+#            compositor for its output rather than reading the framebuffer.
+#
+# **Under `run-vm.sh --gl`, `screendump` silently returns an all-black PNG** and the guest
+# path is the only one that works. That is not a bug we can fix from here: `qmp_screendump`
+# in ui/ui-qmp-cmds.c copies `surface->image`, the pixman DisplaySurface, and with
+# virtio-gpu-gl the guest's scanout is a GL texture that goes straight to Cocoa — the
+# pixman surface it reads is real, allocated, and blank. It does not error; it hands back a
+# perfectly valid picture of nothing (learned/phase-6.md §3).
+#
+# So the mode is chosen by looking at what QEMU was actually started with, rather than by
+# trusting a flag or noticing afterwards that the picture came out dark.
 #
 # `--key` sends a keystroke through the emulated USB keyboard (QEMU `sendkey` syntax:
 # `meta_l-ret`, `ctrl-alt-f2`, `a`), which is the only way to exercise a compositor
@@ -33,13 +52,18 @@ QMP_SOCK="${ARTIFACTS}/qmp.sock"
 INPUT=()
 DELAY="0.5"
 OUT=""
+MODE="auto"
+SSH_PORT="2222"
+VM_USER="chime"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --key) INPUT+=("key:${2:?--key needs an argument, e.g. meta_l-ret}"); shift 2 ;;
     --type) INPUT+=("type:${2?--type needs a string}"); shift 2 ;;
     --delay) DELAY="${2:?--delay needs seconds}"; shift 2 ;;
-    -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --guest) MODE="guest"; shift ;;
+    --scanout) MODE="scanout"; shift ;;
+    -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "error: unknown argument: $1" >&2; exit 2 ;;
     *) OUT="$1"; shift ;;
   esac
@@ -61,13 +85,35 @@ case "${OUT}" in
   *) OUT="$(pwd)/${OUT}" ;;
 esac
 
+# Which capture path? Ask the running QEMU what GPU it was given. `ps` rather than
+# `pgrep -f`, whose pattern would also match this script's own command line — the mistake
+# learned/phase-3.md §7 and phase-4.md §7 each record once.
+#
+# Two traps in one line, and both fail the same silent way — always answering "scanout",
+# whose symptom is the black screenshot this check exists to prevent:
+#
+#   1. `-ww` is load-bearing. macOS ps truncates each line to the terminal width, and
+#      `-device virtio-gpu-gl-pci` sits ~250 characters into run-vm.sh's command line.
+#   2. The match is a bash pattern, not `| grep -q`. Under `set -o pipefail` a *successful*
+#      `grep -q` is what breaks it: grep exits at the first match, ps gets SIGPIPE and
+#      dies, and pipefail then reports the pipeline as failed. Finding what you were
+#      looking for makes the test say no.
+if [[ ${MODE} == "auto" ]]; then
+  qemu_cmdlines="$(ps -Awwo command= || true)"
+  if [[ ${qemu_cmdlines} == *virtio-gpu-gl* ]]; then
+    MODE="guest"
+  else
+    MODE="scanout"
+  fi
+fi
+
 # `${INPUT[@]+...}` because macOS ships bash 3.2, where an empty array expanded under
 # `set -u` is an "unbound variable" — a plain capture with no --key/--type would die here.
-python3 - "${QMP_SOCK}" "${OUT}" "${DELAY}" ${INPUT[@]+"${INPUT[@]}"} <<'PY'
+python3 - "${QMP_SOCK}" "${OUT}" "${DELAY}" "${MODE}" ${INPUT[@]+"${INPUT[@]}"} <<'PY'
 import json, socket, sys, time
 
-sock_path, out_path, delay = sys.argv[1], sys.argv[2], float(sys.argv[3])
-inputs = sys.argv[4:]
+sock_path, out_path, delay, mode = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]
+inputs = sys.argv[5:]
 
 # QEMU's `sendkey` takes key *names*, so an ASCII string has to be spelled out one keyname
 # at a time, with `shift-` in front of anything that needs it on a US layout.
@@ -133,7 +179,31 @@ for item in inputs:
             time.sleep(0.05)
     time.sleep(delay)
 
-# QEMU 7.1+ accepts format=png; without it the output is a PPM whatever the extension says.
-command("screendump", filename=out_path, format="png")
-print(out_path)
+# In guest mode the keystrokes above were the whole job; grim takes the picture, back in
+# the shell. QEMU 7.1+ accepts format=png; without it the output is a PPM whatever the
+# extension says.
+if mode == "scanout":
+    command("screendump", filename=out_path, format="png")
 PY
+
+if [[ ${MODE} == "guest" ]]; then
+  ssh_opts=(-p "${SSH_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
+  # grim needs to find the compositor, and an ssh session has neither XDG_RUNTIME_DIR nor
+  # WAYLAND_DISPLAY. The socket name is *not* reliably wayland-1 — it is whichever number
+  # the compositor got — so it is looked up rather than assumed. `grim -` writes the PNG
+  # to stdout, which saves a temp file in the guest and a second hop to fetch it.
+  if ! ssh "${ssh_opts[@]}" "${VM_USER}@localhost" '
+        export XDG_RUNTIME_DIR=/run/user/1000
+        WAYLAND_DISPLAY=$(cd "$XDG_RUNTIME_DIR" && ls -1 | grep -m1 "^wayland-[0-9]\+$")
+        [ -n "$WAYLAND_DISPLAY" ] || { echo "no wayland socket in $XDG_RUNTIME_DIR" >&2; exit 1; }
+        export WAYLAND_DISPLAY
+        exec grim -' > "${OUT}"; then
+    rm -f "${OUT}"
+    echo "error: grim failed in the guest." >&2
+    echo "       Is the desktop up? Is grim installed (modules/desktop.nix)?" >&2
+    echo "       The scanout path is not a fallback here — under --gl it returns black." >&2
+    exit 1
+  fi
+fi
+
+echo "${OUT}"
