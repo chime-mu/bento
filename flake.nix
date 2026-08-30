@@ -35,6 +35,14 @@
           {
             nix.registry.nixpkgs.flake = nixpkgs;
             nix.nixPath = [ "nixpkgs=${nixpkgs}" ];
+
+            # Stamp the running system with the commit it was built from. Without this,
+            # `nixos-version --configuration-revision` and the Configuration Revision
+            # column of `nixos-rebuild list-generations` both read "Unknown" — a poor
+            # answer on a machine whose premise is an agent rewriting it in place, where
+            # "which revision am I running?" is the first question after anything breaks.
+            # `dirtyRev` covers the uncommitted case, which is the common one mid-edit.
+            system.configurationRevision = self.rev or self.dirtyRev or "unknown";
           }
         ];
       };
