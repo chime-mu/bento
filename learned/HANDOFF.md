@@ -1,136 +1,225 @@
-# Handoff — v1 is done
+# Handoff — v1 is done; next up, resolution and keyboard layout
 
 Written 2026-08-30, at the end of the Phase 6 session. (Supersedes the Phase 5 → Phase 6
-handoff; its findings now live in `learned/phase-6.md`.)
+handoff; its findings live in `learned/phase-6.md`.)
 
-**Phases 0–6 are all complete, including the stretch goal.** `PLAN-v1.md` said Phase 6 was
-allowed to fail. It did not: the guest renders on the M4's GPU through VirGL, and
-`glxinfo -B` reports `virgl (ANGLE (Apple, Apple M4, OpenGL 4.1 Metal - 90.5))` with
-`Accelerated: yes`.
+**Phases 0–6 are all complete, including the stretch goal, and nothing is outstanding.**
+The guest renders on the M4's GPU through VirGL, and Claude Code is logged in. Every
+acceptance criterion in `PLAN-v1.md` is met.
 
-There is no Phase 7. **The next session needs a decision from you about what v2 is**, not
-an implementation task — see "Where to go next".
+Two new pieces of work are requested, described in full below. Neither is in `PLAN-v1.md`
+— that plan is finished — so treat this file as their specification.
 
-## Nothing is outstanding
+## Paste this into the new session
 
-**Claude Code is logged in** (2026-08-30, at the guest's own screen). That was the last
-open item in the whole plan, carried since Phase 5 as the one thing no agent could do, and
-it is closed: `~/.claude/.credentials.json` exists, 600, and `claude --version` reports
-2.1.245. The agent-driven loop the whole repo was built for now works end to end:
+> Two changes to bento (`/Users/chime/Workspace/Bento`), described in
+> `learned/HANDOFF.md`: **(1) better resolution and a real full-screen window, the way
+> try-omarchy does it, and (2) the ability to switch keyboard layout.**
+>
+> Read `PLAN-v1.md` and every `learned/phase-*.md` in full first — they record measured
+> facts that contradict upstream documentation, and working from the official docs will
+> waste your time or break things. `learned/phase-6.md` is the most relevant: it is the
+> one that built the host QEMU these changes configure.
+>
+> Verify everything yourself against the running machine rather than reasoning about it.
+> Note any substitution where a named option no longer exists. Finish by writing up what
+> you measured, `./scripts/vm-sync.sh pull`, and committing.
 
-```bash
-ssh -p 2222 chime@localhost        # or Super+Return in the VM window
-cd ~/bento && claude               # ask for an OS change → agent edits the flake → bento rebuild
+---
+
+## Task 1 — resolution and full-screen
+
+The window is a fixed 1920×1080 in a Cocoa window on a **2880×1864 Retina** panel. Wanted:
+a bigger, sharper guest, and a genuine full-screen mode like try-omarchy's.
+
+### What is already established (do not re-derive)
+
+`learned/phase-0.md` §3 read try-omarchy's source. Their runtime line is:
+
+```
+-device virtio-gpu-gl-pci,max_outputs=1,xres=1920,yres=1080
+-display cocoa,gl=es,show-cursor=on,zoom-to-fit=on,full-screen=on,swap-opt-cmd=off
 ```
 
-**The one thing that can undo it is a re-image.** The token lives in `~/.claude` in the
-guest, which survives every `bento rebuild` and does **not** survive `build-image.sh`,
-because that replaces the disk. Logging back in is part of the cost of the clean loop —
-budget for it rather than being surprised by it.
+**Every one of those display options exists in the QEMU we built** (10.1.2). Verified
+against `qapi/ui.json` in the source tree rather than guessed, because it is not obvious
+which are Cocoa-specific and which are not:
 
-If the VM window is locked when you get there, that is hyprlock on hypridle's 30-minute
-timer: the box reading "Locked" is the password field, the password is `bento`, and there
-is no cursor in it until you start typing.
+| Option | Where it is defined |
+|---|---|
+| `full-screen`, `show-cursor`, `window-close`, `gl` | base `DisplayOptions` — valid for *any* display type |
+| `zoom-to-fit`, `zoom-interpolation`, `swap-opt-cmd`, `left-command-key`, `full-grab` | `DisplayCocoa` |
+
+So the `-display` half needs **no patch**. `-display cocoa,help` is not implemented
+("Help is not available for this option"), which is why the QAPI file is the authority.
+
+### The cheapest win, and it may be most of the task
+
+`hyprctl monitors` in the guest already reports these as available:
+
+```
+availableModes = ["1920x1080@60.00Hz", "5120x2160@50.00Hz", "4096x2160@50.00Hz",
+                  "3840x2160@60.00Hz", … "640x480@59.94Hz"]
+```
+
+**The guest is not limited to 1920×1080 — it is choosing it**, because `run-vm.sh` passes
+`xres=1920,yres=1080` and virtio-gpu's EDID makes that the *preferred* mode. Raising
+`GPU_XRES`/`GPU_YRES` in `scripts/run-vm.sh` is a two-line change, and
+`home/chime/hyprland.nix` can request a mode and a scale directly (it currently sets
+neither, deliberately — `learned/phase-4.md` and `wallpaper.nix` both note that the monitor
+name is emulated-hardware-specific and should not be hardcoded; `monitor = ,preferred,auto,1`
+style entries keep that property).
+
+Start here and measure before reaching for any patch. Note that HiDPI is a *separate*
+question from resolution: a 2880×1864 guest at `scale=1` gives tiny text, and Hyprland's
+`scale` plus `GDK_SCALE`/`QT_SCALE_FACTOR` is where that is answered.
+
+### The open question — dynamic resize
+
+try-omarchy's *automatic* resolution and HiDPI updates come from a **second, separate
+patch**, `qemu-cocoa-dynamic-display.patch` — "publish the live backing display through
+virtio-gpu" (`learned/phase-0.md` §3). **We did not apply it.** `scripts/patches/` holds
+only the GL/texture-borrowing series.
+
+But that series does touch `ui/cocoa.m`'s `updateUIInfo` and `resizeWindow`, which is the
+same code path that publishes host window geometry to the guest via `dpy_set_ui_info` →
+virtio-gpu EDID. **So it is genuinely unknown how much dynamic behaviour we already
+have**, and the first experiment should settle it rather than assume:
+
+```bash
+# boot with try-omarchy's display line, then resize/fullscreen the window by hand
+# and watch whether the guest follows:
+ssh -p 2222 chime@localhost \
+  'export XDG_RUNTIME_DIR=/run/user/1000 HYPRLAND_INSTANCE_SIGNATURE=$(ls -t /run/user/1000/hypr | head -1); \
+   hyprctl monitors -j | jq -r ".[0] | \"\(.width)x\(.height)@\(.refreshRate)\""'
+```
+
+If the guest already follows the window, this task is configuration only. If it does not,
+the patch is the next step — and it is much cheaper now than it was, because we already
+build QEMU from source (`scripts/build-qemu-gl.sh`, ~4 minutes, one target). Vendor it into
+`scripts/patches/` with a pinned sha256 the way the existing one is, and note that
+try-omarchy's copy is served from a *branch* URL that can move.
+
+### Two things that will bite
+
+- **`show-cursor=on` interacts with the guest cursor.** try-omarchy pairs it with
+  `cursor { invisible = true }` in Hyprland, because Cocoa composes the host cursor
+  *outside* the guest scanout for zero-lag motion — otherwise you get two pointers. Our
+  `home/chime/hyprland.nix` currently sets `no_hardware_cursors` off the
+  `softwareRendering` option, and `hardwareCursorsInUse` is now `true`
+  (`learned/phase-6.md` §7), so this needs measuring rather than copying.
+- **Changing `xres`/`yres` does not renumber the PCI slots**, so `--reset-vars` is not
+  needed — `learned/phase-6.md` §2 established this for the device swap, and a property
+  change is strictly less invasive. A UEFI `Shell>` prompt would still be the symptom if
+  something *did* change the topology.
+
+Screenshots will change size with the resolution; `scripts/screen-colors.py` prints the
+dimensions it read, so use it to confirm rather than trusting the flag.
+
+---
+
+## Task 2 — switch keyboard layout
+
+Currently `us` and nothing else. Measured in the guest:
+
+```
+qemu-qemu-usb-keyboard   layout=us   active=English (US)
+System Locale: LANG=en_US.UTF-8, LC_TIME=en_DK.UTF-8, LC_MONETARY/LC_PAPER/LC_MEASUREMENT=da_DK.UTF-8
+VC Keymap: (unset)      X11 Layout: us
+```
+
+The locale is already half-Danish, so `us,dk` is the obvious pair — **confirm which
+layouts are actually wanted before building it.**
+
+Where the pieces live:
+
+| Layer | Where | Note |
+|---|---|---|
+| Hyprland (the real one) | `home/chime/hyprland.nix`, `input.kb_layout` | `kb_layout = "us,dk"` plus `kb_options = "grp:alt_shift_toggle"` or `grp:win_space_toggle` |
+| An explicit keybind | same file | `hyprctl switchxkblayout <device> next` — the device name is `qemu-qemu-usb-keyboard` here, but hardcoding an emulated device name is exactly the coupling this repo avoids; `current` / `all` forms exist |
+| Showing which is active | `home/chime/waybar.nix` | waybar's `hyprland/language` module; theme it from `home/chime/theme/` like every other module, and mind that glyphs are **codepoints, never pasted characters** (`learned/phase-4.md` §1) |
+| The text console | `modules/core.nix` | `console.keyMap` is unset. tty1 matters here — quitting Hyprland with `Super+Shift+Q` drops you to `agreety` on it (`learned/phase-3.md` §4) |
+
+### The trap, and it is a real one
+
+**Switching the layout will change what `scripts/vm-screenshot.sh --type` produces.** That
+tool drives QEMU's emulated keyboard by *key name* — `sendkey a`, `sendkey shift-4` — which
+are physical US positions. The guest then interprets those positions through whatever xkb
+layout is active. So with `dk` selected, `--type` will silently type different characters,
+and the symbols are what move (`learned/phase-3.md` §1 documents the US-position
+assumption: `$` is `shift-4`, `_` is `shift-minus`).
+
+This is the agent's own eyes and hands, used by every graphical test in Phases 3–6. Any
+default that leaves a non-US layout active at login will make those tests lie. **Leave `us`
+first in the list**, and if that is not what you want day to day, say so plainly in the
+commit rather than letting a future session discover it through a test that fails for no
+visible reason.
+
+---
 
 ## State to be aware of
 
-**The bento VM is running, windowed, with VirGL**, on the self-built QEMU. Check before
-assuming: `pgrep -fl qemu-system-aarch64` — and note the binary path in the output tells
-you which mode it is in (`~/.local/state/bento/qemu-gl/...` means GL).
-
-**Host and VM are in sync**, both trees clean — confirm with `./scripts/vm-sync.sh status`
-rather than trusting this file. `bento doctor` over ssh answers everything else in one
-screen and is still the right first command of a session:
+**In sync at `712103f`**, host and VM, both trees clean — confirm with
+`./scripts/vm-sync.sh status` rather than trusting this file. `bento doctor` over ssh
+answers everything else in one screen and is still the right first command:
 
 ```bash
 ssh -p 2222 chime@localhost 'cd ~/bento && bento doctor'
 ```
 
-**`artifacts/bento.qcow2` is the live disk and there is no snapshot behind it.**
-`build-image.sh` replaces it outright and `bento gc --all` deletes the generations you
-could roll back to. Treat both as destructive; `./scripts/vm-sync.sh pull` before either.
-A re-image also costs the Claude Code login.
+**The bento VM is running, windowed, on VirGL.** `pgrep -fl qemu-system-aarch64` tells you
+which mode — a path under `~/.local/state/bento/qemu-gl` means GL. If the window is locked,
+that is hyprlock on hypridle's 30-minute timer: the box reading "Locked" is the password
+field, the password is `bento`, and there is no cursor until you type.
 
-**Phase 6 added a host dependency for the first time since Phase 0**, and it is the only
-part of this repo that is not declarative:
+**Claude Code is logged in**, and `build-image.sh` would undo that — it replaces the disk.
+`~/.claude` survives every `bento rebuild` and no re-image.
+
+**`artifacts/bento.qcow2` is the live disk with no snapshot behind it.** `build-image.sh`
+replaces it and `bento gc --all` deletes the generations you could roll back to. Treat both
+as destructive; `./scripts/vm-sync.sh pull` first.
+
+**Phase 6's host footprint** — the only non-declarative part of this repo:
 
 | What | Where | Undo |
 |---|---|---|
-| GL QEMU 10.1.2 | `~/.local/state/bento/qemu-gl` (36 MB, outside the repo) | `rm -rf`, then `--no-gl` |
-| ANGLE + epoxy + virglrenderer | Homebrew, from the `startergo/qemu-virgl` tap | `brew uninstall virglrenderer libepoxy-angle libangle && brew untap startergo/qemu-virgl` |
+| GL QEMU 10.1.2 | `~/.local/state/bento/qemu-gl` (36 MB) | `rm -rf`, then `--no-gl` |
+| ANGLE + epoxy + virglrenderer | Homebrew, `startergo/qemu-virgl` tap | `brew uninstall virglrenderer libepoxy-angle libangle && brew untap startergo/qemu-virgl` |
 
-Nothing in it needed sudo, and Homebrew's own `qemu` was left untouched and still works.
-`./scripts/build-qemu-gl.sh --check` reports the state; `./scripts/build-qemu-gl.sh`
-rebuilds it in about four minutes. **A macOS or Homebrew update could break this build** —
-that is the standing risk, and `run-vm.sh --no-gl` is the standing answer.
+`./scripts/build-qemu-gl.sh --check` reports it. The linux-builder is **not** running and
+is needed only to rebuild the *image*.
 
-The linux-builder is **not** running. It is needed only to rebuild the *image*.
+### Where to do this work
 
-| What | How to start |
-|---|---|
-| bento VM | `./scripts/run-vm.sh` (VirGL, windowed) · `--no-gl` · `--headless` |
-| `linux-builder` VM | `./scripts/start-linux-builder.sh` |
+Task 1 is **host** work — it is `scripts/run-vm.sh`, QEMU flags and possibly a QEMU patch,
+none of which exist inside the guest. Task 2 is almost entirely **guest** work and is a
+good fit for `cd ~/bento && claude` on the machine itself, where `hyprctl` and the live
+session are simply there instead of behind three exported variables per ssh command.
 
-## The three things most likely to bite whoever is next
+Do not run both at once against the same files: the host and guest are two real git
+repositories and `vm-sync.sh pull` is fast-forward only by design, so divergence is
+refused rather than merged.
+
+## The findings most likely to bite, whichever task you start with
 
 Full detail in `learned/phase-6.md`; these are the ones that cost real time.
 
-1. **A screenshot that comes back all black is the camera, not the desktop** (§3). QMP
-   `screendump` copies the pixman surface, and under VirGL the scanout is a GL texture, so
-   it writes a valid 1920×1080 PNG of nothing and reports no error.
-   `scripts/vm-screenshot.sh` already handles this — it takes the picture with `grim`
-   inside the guest whenever the running QEMU has a GL device — but anything else that
-   talks to QMP directly will be quietly lied to. Sanity-check any screenshot with
-   `./scripts/screen-colors.py <png> --hist`; one line, and `#000000 100.0%` is the tell.
-
-   Corollary worth keeping: **`--no-gl` is the mode to debug a boot failure in.** grim
-   needs a running compositor and cannot photograph a UEFI `Shell>` prompt; `screendump`
-   can.
-
-2. **This GPU is faster but *narrower* than software rendering** (§5). ANGLE is a GL ES
-   implementation, so the guest gets `Max GLES[23] profile version: 3.0` and
-   `Max core profile version: 0.0` — **no desktop GL core profile at all**, where llvmpipe
-   had one. That is why ghostty needs `LIBGL_ALWAYS_SOFTWARE=1` scoped to its own binary
-   (`home/chime/ghostty.nix`). Any new application that fails to get a GL context is
-   probably hitting the same wall, and the same wrapper is the fix — **scoped to that
-   binary, never session-wide**, which `learned/phase-3.md` §2 measured at 8504 renderer
-   failures.
-
+1. **A screenshot that comes back all black is the camera, not the desktop** (§3). Under
+   VirGL, QMP `screendump` copies the pixman surface while the scanout is a GL texture, so
+   it writes a valid PNG of nothing and reports no error. `scripts/vm-screenshot.sh`
+   handles this by using `grim` in the guest when it sees a GL device — but anything
+   talking to QMP directly gets lied to. Sanity-check with
+   `./scripts/screen-colors.py <png> --hist`; `#000000 100.0%` is the tell. Corollary:
+   **`--no-gl` is the mode to debug a boot failure in**, because grim needs a running
+   compositor and cannot photograph a UEFI prompt.
+2. **This GPU is faster but *narrower* than llvmpipe** (§5). ANGLE is GL ES, so there is
+   no desktop GL core profile at all. That is why ghostty carries a
+   `LIBGL_ALWAYS_SOFTWARE` wrapper scoped to its own binary in `home/chime/ghostty.nix`.
+   Anything new that cannot get a GL context is probably hitting the same wall; the same
+   wrapper is the fix, **scoped to that binary, never session-wide**.
 3. **`bento.desktop.softwareRendering` cannot tell you whether there is a GPU** (§4). It is
-   evaluated when the system is built; the GPU appears when the VM is launched, and one
-   disk image serves both. Anything that must be correct in both modes has to be
-   unconditional — which is why `GSK_RENDERER=cairo` is still set despite Phases 4 and 5
-   both predicting Phase 6 would delete it. Do not re-gate it.
-
-## Where to go next — this needs your decision, not an agent's
-
-`PLAN-v1.md` is finished. Its own stated horizon was *"v1 runs as a QEMU virtual machine on
-an Apple Silicon MacBook. **Bare-metal comes later.**"* The obvious candidates, with what
-each would actually cost:
-
-- **Bare metal.** The configuration was written for it throughout — `modules/` is
-  host-agnostic, `hosts/bento-vm/` holds everything virtual, and `softwareRendering` exists
-  precisely so a real machine can not set it. The work is a new `hosts/<machine>/`, real
-  `hardware-configuration.nix`, disk partitioning, and the first bento that has a battery,
-  a backlight and wifi — all three of which `learned/phase-4.md` §7 notes were deliberately
-  left out of waybar because this guest has none.
-- **The theme switcher.** `home/chime/theme/` was built as the seam for it
-  (`learned/phase-4.md` §8) and nothing has been allowed to reach past `colors.hex` /
-  `colors.terminal` since. This is the cheapest real feature in the list.
-- **Persuade the desktop to resize.** try-omarchy gets dynamic resolution from a Cocoa
-  patch that publishes the live window size through virtio-gpu EDID
-  (`learned/phase-0.md` §3). We are on a fixed 1920×1080 because we did not take that
-  patch. Now that we build QEMU ourselves, taking it is a much smaller step than it was.
-- **Nothing.** v1 does what it set out to do, and the honest option is to use it for a
-  while and let the next phase be whatever annoys you first.
-
-If the next session is an implementation phase, the prompt shape that has worked six times
-running is still the right one:
-
-> Implement **&lt;phase&gt;** in this repo (`/Users/chime/Workspace/Bento`). Read
-> `PLAN-v1.md` and every `learned/phase-*.md` in full before doing anything — those files
-> record measured facts that contradict upstream documentation, and you will waste time or
-> break things working from the official docs. Verify the acceptance criteria yourself;
-> list anything only I can do as manual steps at the end. If a named package or option no
-> longer exists, find the current equivalent and note the substitution. Finish by writing
-> `learned/<phase>.md`, `./scripts/vm-sync.sh pull`, and committing.
+   fixed when the system is built; the GPU appears when the VM is launched, and one image
+   serves both. Anything that must be right in both modes has to be unconditional — which
+   is why `GSK_RENDERER=cairo` is still set. Do not re-gate it.
+4. **`| grep -q` under `set -o pipefail` reports failure on success** (§9), and macOS `ps`
+   truncates without `-ww`. Both cost time in Phase 6 and both fail silently.
