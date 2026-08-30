@@ -11,12 +11,44 @@
 # "Waiting for elephant...". home-manager models this — `services.walker.
 # enableElephantIntegration` defaults to `services.elephant.enable` and adds the
 # Requires=/After= — but it will not enable elephant for you.
-{ ... }:
+{
+  config,
+  osConfig,
+  ...
+}:
 let
   theme = import ./theme;
   inherit (theme) colors font;
 in
 {
+  # **elephant indexes once, at startup, and nothing restarts it on a rebuild.**
+  #
+  # Measured in Phase 5, and it is the exact failure this repo keeps meeting from a new
+  # angle: the launcher opened, was themed, accepted the query, and answered "Nothing
+  # matches" for software that was installed and on `PATH`. Its journal gave it away —
+  # `desktopapplications results=7` at the same count it had had before three rebuilds
+  # added ghostty, chromium and neovim, and `runner executables=1030` scanned once at
+  # login and never again.
+  #
+  # The mechanism is a Nix one rather than an elephant bug. A rebuild does not add a file
+  # to `/etc/profiles/per-user/chime/share/applications`; it repoints that symlink at a
+  # *new* store path. A scan — or an inotify watch, which follows the resolved inode —
+  # of the old directory stays valid and stays wrong.
+  #
+  # So the unit gets the profile paths written into it. Any rebuild that changes what is
+  # installed changes this text, home-manager's sd-switch sees a changed unit file, and
+  # elephant restarts and re-indexes. Both profiles are named because the desktop entries
+  # come from both: ghostty and chromium are home packages, and anything in
+  # `environment.systemPackages` (modules/agent.nix) lands in the system one.
+  #
+  # `osConfig.system.path` and not `system.build.toplevel`: the latter depends on
+  # home-manager's own generation, and asking for it from inside home-manager is an
+  # infinite recursion.
+  systemd.user.services.elephant.Unit.X-Restart-Triggers = [
+    config.home.path
+    osConfig.system.path
+  ];
+
   services.elephant = {
     enable = true;
 
