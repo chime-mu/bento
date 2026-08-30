@@ -113,23 +113,52 @@ nix build --impure --no-link --expr \
   `!include nix.custom.conf`.
 - Daemon label for restarts: **`systems.determinate.nix-daemon`**.
 
-**Next action — try (a), fall back to (b):**
+**Option (a) — Determinate native Linux builder: ❌ RULED OUT.** Configuring
+`external-builders` correctly is not enough; the feature is **licence-gated server-side**.
+The build reaches Determinate's service and is refused:
 
-- a) Enable the native builder by hand (one sudo command + daemon restart):
-  ```
-  sudo tee -a /etc/nix/nix.custom.conf >/dev/null <<'EOF'
-  extra-experimental-features = external-builders
-  external-builders = [{"systems":["aarch64-linux","x86_64-linux"],"program":"/usr/local/bin/determinate-nixd","args":["builder"]}]
-  EOF
-  sudo launchctl kickstart -k system/systems.determinate.nix-daemon
-  ```
-  Then re-run the probe above. If it still refuses, the feature is account-gated —
-  try `determinate-nixd login` (FlakeHub), and if that fails go to (b).
-- b) **`darwin.linux-builder`** — the free, account-free, well-documented fallback: a
-  NixOS builder VM registered in `/etc/nix/machines`, per the
-  [nixpkgs manual](https://nixos.org/manual/nixpkgs/unstable/#sec-darwin-builder).
-  Also requires adding `chime` to `trusted-users` in `nix.custom.conf`. It uses QEMU,
-  which is already installed.
+```
+Error: failed to set up Native Linux Builder
+Caused by: HTTP status code 400 Bad Request, reply:
+  The Native Linux Builder is not currently available.
+  Contact support@determinate.systems for more information.
+```
+
+Do not retry this without an arrangement with Determinate Systems. **The
+`external-builders` setting must be actively removed**, because while present it
+hijacks Linux builds and fails instead of falling through to a remote builder.
+
+**Option (b) — `darwin.linux-builder`: ✅ CHOSEN.** Free, no account, documented in
+[nixpkgs `doc/packages/darwin-builder.section.md`](https://github.com/NixOS/nixpkgs/blob/master/doc/packages/darwin-builder.section.md).
+Runs a small NixOS VM on host port **31022**, reached over SSH as `builder@linux-builder`.
+
+*Pre-flight (verified 2026-08-30):* `nix build --dry-run nixpkgs#darwin.linux-builder`
+reports **664 paths fetched, 0 built** (715 MiB download / 2.9 GiB unpacked) — so there
+is **no chicken-and-egg problem**; the builder itself needs no Linux builder.
+
+*Two deviations from the stock nixpkgs instructions — both mandatory here:*
+1. Settings go in **`/etc/nix/nix.custom.conf`**, not `nix.conf` (Determinate rewrites
+   `nix.conf` on upgrade).
+2. The daemon restart is `sudo launchctl kickstart -k system/`**`systems.determinate.nix-daemon`**
+   — the documented `org.nixos.nix-daemon` label **does not exist** on Determinate Nix,
+   so the stock command silently does nothing.
+
+All of this is encoded in **`scripts/setup-linux-builder.sh`** (idempotent; backs up
+`nix.custom.conf`; strips the dead `external-builders` config). Run it once:
+
+```
+sudo ./scripts/setup-linux-builder.sh
+nix run nixpkgs#darwin.linux-builder    # separate terminal, LEAVE RUNNING
+```
+
+The builder VM must be running for any macOS-side Linux build (i.e. Phase 1's image
+build). Stop it with `shutdown now` at its prompt. Note this is only needed to produce
+the *initial* image — per Phase 2, all later iteration happens inside the bento VM
+itself, which is natively `aarch64-linux` and needs no builder.
+
+*Alternative if the QEMU builder proves slow:* `darwin.linux-builder-vz` is a drop-in
+replacement using Apple's Virtualization.framework (same port, same host key, same
+config) — but it requires Rosetta installed, so it is not the default choice here.
 
 **Note — there is no `edk2-aarch64-vars.fd`** shipped by Homebrew (only `edk2-arm-vars.fd`).
 Phase 1 must create a writable 64 MiB vars pflash itself, e.g.
