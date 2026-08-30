@@ -100,6 +100,11 @@ in
           dots_spacing = 0.3;
           dots_center = true;
 
+          # `input-field` has its own `font_family`, defaulting to "Sans" — the labels'
+          # setting does not reach it, and the placeholder renders in DejaVu while the
+          # clock above it is CaskaydiaMono.
+          font_family = font.mono;
+
           outer_color = colors.rgba colors.hex.border "ff";
           inner_color = colors.rgba colors.hex.surface "ff";
           font_color = colors.rgba colors.hex.foreground "ff";
