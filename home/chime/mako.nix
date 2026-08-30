@@ -50,7 +50,12 @@ in
       default-timeout = 6000;
       ignore-timeout = false;
       max-visible = 5;
-      group-by = "app-name";
+      # By summary, not by app-name. Grouping on the app collapses *everything* one
+      # program says into a single bubble with a counter — measured: two unrelated
+      # `notify-send` messages became "(2) Critical" and the first one's text was simply
+      # not on screen. By summary, a repeated notification still collapses (which is the
+      # point) and two different ones stay two.
+      group-by = "summary";
 
       icons = true;
       max-icon-size = 48;
