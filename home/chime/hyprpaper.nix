@@ -17,31 +17,41 @@ in
     enable = true;
 
     settings = {
-      # Nothing changes the wallpaper at runtime in v1, so hyprpaper does not need to sit
-      # on a control socket. A theme switcher (out of scope, see home/chime/theme) would
-      # turn this back on and talk to it with `hyprctl hyprpaper wallpaper`.
-      ipc = "off";
       splash = false;
 
-      preload = [ "${theme.wallpaper}" ];
-
-      # `*` = every output, and it has to be `*` and **not** the empty field that every
-      # hyprpaper example writes as `wallpaper = ,/path`. Both are documented as wildcards
-      # and only one of them works in 0.8.4. From its own source, in
-      # `src/config/WallpaperMatcher.cpp`:
+      # **hyprpaper 0.8 has a different configuration language from every example you will
+      # find**, and it does not say so. `preload = <path>` and `wallpaper = <monitor>,<path>`
+      # — the two lines in the wiki, in the man page's examples, and in every dotfiles repo
+      # — are simply gone. `src/config/ConfigManager.cpp` registers no `preload` value and
+      # no `wallpaper` handler; `wallpaper` is a hyprlang **special category** keyed on
+      # `monitor`, so it is a block with fields:
       #
+      #     wallpaper {
+      #       monitor = *
+      #       path = /nix/store/…-tokyo-night.png
+      #     }
+      #
+      # which is what home-manager writes for a *list of attrsets* (a list of strings would
+      # write the old `wallpaper = …` line). Preloading is implicit now.
+      #
+      # The old spelling does not fail — it is accepted, ignored, and hyprpaper runs
+      # happily with nothing to draw, logging `Monitor Virtual-1 has no target: no wp will
+      # be created` at DEBUG on a service that reports `active (running)`.
+      #
+      # `monitor = *`, not the empty string that also means "all outputs": hyprpaper's own
+      # source says why, in `src/config/WallpaperMatcher.cpp` —
       #   // "*" is preferred since hyprlang's special category system doesn't properly
       #   // return entries with empty string keys from listKeysForSpecialCategory().
-      #
-      # The empty key never comes back out of the config, so no setting is registered and
-      # hyprpaper logs `Monitor Virtual-1 has no target: no wp will be created` — at DEBUG
-      # level, on a service that is otherwise `active (running)`. The desktop just has no
-      # wallpaper and nothing anywhere says it failed.
-      #
-      # The output is still not named: the guest has exactly one, called whatever
-      # virtio-gpu's EDID says, and hardcoding that would tie the config to the emulated
-      # hardware (home/chime/hyprland.nix takes the same line with `monitor`).
-      wallpaper = [ "*,${theme.wallpaper}" ];
+      # The output is not named for the reason home/chime/hyprland.nix does not name it
+      # either: it is whatever virtio-gpu's EDID says, and hardcoding that ties the
+      # configuration to the emulated hardware.
+      wallpaper = [
+        {
+          monitor = "*";
+          path = "${theme.wallpaper}";
+          fit_mode = "cover";
+        }
+      ];
     };
   };
 }
