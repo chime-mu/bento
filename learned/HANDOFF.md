@@ -16,30 +16,38 @@ handoff; the findings it carried now live in `learned/phase-1.md` and `learned/p
 > substitution in your report and in `learned/phase-3.md`.
 >
 > Phase 3 runs *inside* the VM via the Phase 2 loop. Start with:
->   ./scripts/run-vm.sh --headless
+>   ./scripts/run-vm.sh --headless   # fine for building; see below for the screen
 >   ./scripts/vm-sync.sh push        # get this repo's HEAD into the VM
 >   ssh -p 2222 chime@localhost      # then: cd ~/bento, edit, `bento rebuild`
 > You do **not** need the linux builder or a new image.
 >
-> Verify the acceptance criteria yourself. Anything you cannot verify (needs the VM's
-> screen, or my credentials) — list it for me as explicit manual steps at the end.
+> Phase 3 is the first phase whose acceptance needs the VM's *screen* — "boots straight
+> into Hyprland", "Super+Return opens a terminal". Do as much as you can headlessly and
+> over SSH (`systemctl status greetd`, `loginctl show-session`, `echo $XDG_SESSION_TYPE`
+> in the graphical session), then tell me exactly what to look for when I run
+> `./scripts/run-vm.sh` without `--headless` myself.
+>
+> Verify what you can yourself. Anything you cannot (needs the VM's screen, or my
+> credentials) — list it for me as explicit manual steps at the end.
 > Finish by writing `learned/phase-3.md`, `./scripts/vm-sync.sh pull`, and committing.
 
 ## State to be aware of
 
-**The bento VM may still be running** from the Phase 2 session. `./scripts/run-vm.sh
---headless` if not; the linux-builder is **not** needed and was never started in Phase 2.
+**Nothing is running.** The bento VM was powered off cleanly (`sudo systemctl poweroff`)
+at the end of the Phase 2 session; the linux-builder was never started at all, and Phase 3
+does not need it.
 
 | What | How to start | Needed for Phase 3? |
 |---|---|---|
-| bento VM | `./scripts/run-vm.sh --headless` | **yes** |
+| bento VM | `./scripts/run-vm.sh --headless` | **yes** — Phase 3 happens inside it |
 | `linux-builder` VM | `./scripts/start-linux-builder.sh` | no — only to rebuild the *image* |
 
-**`artifacts/bento.qcow2` is the live disk, and it has moved on.** It still boots, but the
-guest has been rebuilt several times on top of it and is now at flake revision `a1e36f8`.
-There is no snapshot behind it — `build-image.sh` replaces it outright, and `bento gc
---all` inside the guest deletes the older generations you could roll back to. Treat both
-as destructive.
+**`artifacts/bento.qcow2` is the live disk, and it has moved on.** It boots to a guest that
+has been rebuilt nine times on top of the Phase 1 image and now runs flake revision
+`a5ba1d4` — the same commit as `main`, with `~/bento` inside it clean and in sync. There is
+no snapshot behind it: `build-image.sh` replaces it outright, and `bento gc --all` inside
+the guest deletes the older generations you could roll back to. Treat both as destructive.
+(3.46 GiB used of a 60 G qcow2, ~54 G free inside.)
 
 **The VM already has `~/bento`** as a real git repo with no `origin`, and this repo has it
 as a remote named `vm`. `./scripts/vm-sync.sh status` shows whether they agree. If a push
