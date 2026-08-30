@@ -12,7 +12,11 @@
 { ... }:
 let
   theme = import ./theme;
-  inherit (theme) colors font;
+  inherit (theme)
+    colors
+    font
+    icons
+    ;
 in
 {
   programs.waybar = {
@@ -65,19 +69,19 @@ in
       # report on the CPU, and this machine renders its own pixels in software.
       cpu = {
         interval = 5;
-        format = " {usage}%";
+        format = "${icons.cpu} {usage}%";
       };
 
       memory = {
         interval = 5;
-        format = " {percentage}%";
+        format = "${icons.memory} {percentage}%";
         tooltip-format = "{used:0.1f} GiB of {total:0.1f} GiB";
       };
 
       network = {
         interval = 10;
-        format-ethernet = " {ifname}";
-        format-disconnected = " offline";
+        format-ethernet = "${icons.network} {ifname}";
+        format-disconnected = "${icons.networkOff} offline";
         tooltip-format = "{ipaddr}/{cidr} via {gwaddr}";
       };
 

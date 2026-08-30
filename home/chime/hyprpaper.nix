@@ -25,10 +25,23 @@ in
 
       preload = [ "${theme.wallpaper}" ];
 
-      # Empty monitor field = every output. The guest has exactly one, named by whatever
-      # virtio-gpu's EDID says, so naming it here would be a hostage to the emulated
+      # `*` = every output, and it has to be `*` and **not** the empty field that every
+      # hyprpaper example writes as `wallpaper = ,/path`. Both are documented as wildcards
+      # and only one of them works in 0.8.4. From its own source, in
+      # `src/config/WallpaperMatcher.cpp`:
+      #
+      #   // "*" is preferred since hyprlang's special category system doesn't properly
+      #   // return entries with empty string keys from listKeysForSpecialCategory().
+      #
+      # The empty key never comes back out of the config, so no setting is registered and
+      # hyprpaper logs `Monitor Virtual-1 has no target: no wp will be created` — at DEBUG
+      # level, on a service that is otherwise `active (running)`. The desktop just has no
+      # wallpaper and nothing anywhere says it failed.
+      #
+      # The output is still not named: the guest has exactly one, called whatever
+      # virtio-gpu's EDID says, and hardcoding that would tie the config to the emulated
       # hardware (home/chime/hyprland.nix takes the same line with `monitor`).
-      wallpaper = [ ",${theme.wallpaper}" ];
+      wallpaper = [ "*,${theme.wallpaper}" ];
     };
   };
 }

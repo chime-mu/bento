@@ -26,6 +26,35 @@
     size = 12;
   };
 
+  # Nerd Font glyphs, named, and written as **codepoints rather than pasted characters**.
+  #
+  # The obvious way to do this is to paste  and  straight into the string. Do not: they
+  # are U+F085 and U+F1C0, in the Private Use Area, and they survive a round trip through
+  # an editor, a terminal, a diff or an agent's file writer only by luck. The first attempt
+  # at this file lost every one of them silently — the config reached the guest with the
+  # spaces intact and the glyphs gone, and the bar rendered `11%` with a gap in front of it
+  # and no error anywhere to say why.
+  #
+  # A codepoint cannot be lost that way, and it also says which glyph is meant to a reader
+  # whose terminal has no Nerd Font. `builtins.fromJSON` is the escape hatch: Nix string
+  # literals have no `\uXXXX`, JSON does.
+  #
+  # Verified present in nerd-fonts.caskaydia-mono with
+  # `fc-list ":charset=f085" family`. These are all original Font Awesome 4 glyphs, the
+  # oldest and most stable layer of the Nerd Font patch.
+  icons =
+    let
+      glyph = code: builtins.fromJSON ''"\u${code}"'';
+    in
+    {
+      cpu = glyph "f085"; # cogs
+      memory = glyph "f1c0"; # database
+      network = glyph "f0ac"; # globe
+      networkOff = glyph "f127"; # chain-broken
+      lock = glyph "f023"; # lock
+      bell = glyph "f0f3"; # bell
+    };
+
   # A path, so Nix copies the PNG into the store and every consumer gets the same
   # immutable path. Regenerate with `python3 scripts/make-wallpaper.py`.
   wallpaper = ./tokyo-night.png;
