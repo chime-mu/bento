@@ -25,9 +25,13 @@
       liberation_ttf
 
       # The coverage net: Noto is the family whose whole purpose is having a glyph.
+      #
+      # `noto-fonts-color-emoji`, not the `noto-fonts-emoji` that every guide still names
+      # — that attribute is now an alias that *throws* rather than warns:
+      # "'noto-fonts-emoji' has been renamed to/replaced by 'noto-fonts-color-emoji'".
       noto-fonts
       noto-fonts-cjk-sans
-      noto-fonts-emoji
+      noto-fonts-color-emoji
     ];
 
     # fontconfig resolves the generic families through these lists in order. Naming the
