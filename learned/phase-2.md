@@ -129,6 +129,17 @@ host credential inside a disposable VM. The 2222 forward needs neither.
   wrong-port git remote does not fail to connect — it connects to the wrong machine,
   offers every key in the agent, and gets thrown out. If `vm-sync.sh` ever reports that,
   the remote URL is stale: re-run `./scripts/vm-sync.sh init`, which rewrites it.
+- **Two bash traps for anyone editing `vm-sync.sh`**, both caught only because the
+  fresh-clone path was re-tested rather than assumed working after it was extracted from
+  the hand-run commands that had already succeeded:
+  - **`scp` spells the port `-P`; `ssh` spells it `-p`.** Handing ssh's option list to scp
+    does not error on the flag — `-p` is scp's "preserve mtimes" — so scp reads the port
+    number as a source filename: `scp: stat local "2222": No such file or directory`.
+  - **A `RETURN` trap masks the function's exit status**, so `set -e` sails past a failed
+    `init` and it reports success. Use an `EXIT` trap — and then the variable it names
+    must be script-scoped, because by the time `EXIT` fires the function's `local` is gone
+    and `set -u` turns the trap itself into `unbound variable`, leaking the file it exists
+    to delete. Both mistakes were made, in that order.
 - **Host keys are deliberately not pinned.** The guest regenerates its ssh host keys every
   time the image is rebuilt, so pinning would mean teaching the user to clear a
   `REMOTE HOST IDENTIFICATION HAS CHANGED` warning after each clean loop. Same posture

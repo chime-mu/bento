@@ -41,6 +41,15 @@ VM_USER="chime"
 VM_PATH="/home/chime/bento"
 REMOTE_NAME="vm"
 
+# Script-scoped, not local to cmd_init: the EXIT trap runs after the function's locals are
+# gone, and under `set -u` a trap referring to one dies with "unbound variable" — leaking
+# the very file it exists to remove.
+BUNDLE=""
+cleanup() {
+  if [ -n "${BUNDLE}" ]; then rm -f "${BUNDLE}"; fi
+}
+trap cleanup EXIT
+
 # A dev VM on the host's own loopback, whose host key legitimately changes every time the
 # image is rebuilt. Pinning it would mean teaching the user to clear a
 # REMOTE HOST IDENTIFICATION HAS CHANGED warning after each re-image, so it is not pinned
@@ -50,6 +59,10 @@ trust_opts() {
 }
 
 ssh_opts() { printf '%s' "-p ${SSH_PORT} $(trust_opts)"; }
+
+# scp spells the port -P; -p means "preserve mtimes", so passing ssh's option list to scp
+# makes it read the port number as a source filename.
+scp_opts() { printf '%s' "-P ${SSH_PORT} $(trust_opts)"; }
 
 usage() { sed -n '2,7p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
@@ -91,16 +104,18 @@ cmd_init() {
     # A bundle rather than scp/tar of the working tree: it carries the full history in one
     # file, and it sidesteps macOS tar writing AppleDouble `._*` companions for every file
     # with an extended attribute — which is what the first attempt at this produced.
-    local bundle
-    bundle="$(mktemp -t bento-bundle)"
-    trap 'rm -f "${bundle}"' RETURN
+    # Cleaned up by the script-scoped EXIT trap above — deliberately not a RETURN trap,
+    # whose own exit status masks a failure inside the function, letting `set -e` sail
+    # past it so that a broken init reports success.
+    BUNDLE="$(mktemp -t bento-bundle)"
 
     echo "==> Bundling history"
-    git bundle create "${bundle}" --all
+    git bundle create "${BUNDLE}" --all
 
     echo "==> Cloning it into ${VM_PATH}"
     # shellcheck disable=SC2046
-    scp $(ssh_opts) -q "${bundle}" "${VM_USER}@localhost:/tmp/bento.bundle"
+    scp $(scp_opts) -q "${BUNDLE}" "${VM_USER}@localhost:/tmp/bento.bundle"
+
     vm_ssh "
       set -e
       git clone -q --branch main /tmp/bento.bundle ${VM_PATH}
