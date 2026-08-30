@@ -10,6 +10,15 @@ acceptance criterion in `PLAN-v1.md` is met.
 Two new pieces of work are requested, described in full below. Neither is in `PLAN-v1.md`
 — that plan is finished — so treat this file as their specification.
 
+> **Update, later the same day.** A third change was made before either of them was
+> started: `scripts/run-vm.sh` now passes `full-grab=on`, so Cmd+Space opens the guest's
+> launcher instead of Spotlight. **Both tasks below are still untouched.** Findings are in
+> `learned/keyboard-capture.md`, and two of them bear directly on Task 1 — full-screen
+> mode holds the Cocoa mouse grab for as long as it lasts, and the grab is what decides
+> whether the Command key reaches the guest at all. **One thing there is unverified**: the
+> macOS Accessibility permission it depends on had not been granted when the session ended,
+> so nobody has yet seen the grab work. Confirm it first and record the result.
+
 ## Paste this into the new session
 
 > Two changes to bento (`/Users/chime/Workspace/Bento`), described in
@@ -159,7 +168,7 @@ visible reason.
 
 ## State to be aware of
 
-**In sync at `712103f`**, host and VM, both trees clean — confirm with
+**In sync at the keyboard-capture commit**, host and VM, both trees clean — confirm with
 `./scripts/vm-sync.sh status` rather than trusting this file. `bento doctor` over ssh
 answers everything else in one screen and is still the right first command:
 
@@ -167,8 +176,12 @@ answers everything else in one screen and is still the right first command:
 ssh -p 2222 chime@localhost 'cd ~/bento && bento doctor'
 ```
 
-**The bento VM is running, windowed, on VirGL.** `pgrep -fl qemu-system-aarch64` tells you
-which mode — a path under `~/.local/state/bento/qemu-gl` means GL. If the window is locked,
+**The bento VM was shut down** at the end of the keyboard-capture session, cleanly, so that
+restarting the terminal would not power-cut it — QEMU had been launched from a shell under
+the agent's own process tree, which made it a descendant of the terminal application. Boot
+it again with `./scripts/run-vm.sh`. `pgrep -fl qemu-system-aarch64` tells you whether it is
+up and in which mode — a path under `~/.local/state/bento/qemu-gl` means GL. If the window
+is locked,
 that is hyprlock on hypridle's 30-minute timer: the box reading "Locked" is the password
 field, the password is `bento`, and there is no cursor until you type.
 

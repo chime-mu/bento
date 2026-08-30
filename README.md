@@ -39,6 +39,7 @@ v1 runs as a QEMU virtual machine on an Apple Silicon MacBook. Bare metal comes 
 | **[`learned/phase-4.md`](learned/phase-4.md)** | Measured findings from Phase 4 — why GTK 4 draws nothing without `GSK_RENDERER=cairo`, why hyprpaper segfaults on virtio-gpu, and why Nerd Font glyphs have to be written as codepoints. |
 | **[`learned/phase-5.md`](learned/phase-5.md)** | Measured findings from Phase 5 — why a launcher cannot see software a rebuild just installed, which Node builds from source, and why every nvim-treesitter guide now configures nothing. |
 | **[`learned/phase-6.md`](learned/phase-6.md)** | Measured findings from Phase 6 — how the guest reaches Metal, why screenshots silently come back black once it does, the one application GPU acceleration broke, and why the obvious benchmark answers backwards. |
+| **[`learned/keyboard-capture.md`](learned/keyboard-capture.md)** | Post-v1 — why Super+Space opened Spotlight instead of the launcher, which host key Super really is, and the permission that decides it. |
 
 ## Host setup
 
@@ -180,6 +181,16 @@ a LazyVim-flavoured **Neovim**, and **Claude Code**.
 | `Super+←↑↓→` | move focus (with `Shift` to swap windows) |
 | `Super+Shift+S` | screenshot to `~/Pictures` |
 | `Super+Shift+Q` | quit Hyprland, back to a text login |
+
+**Super is the Mac's Command key.** QEMU's Cocoa UI maps it that way, so the table above is
+Cmd+Return, Cmd+Space and so on. macOS would normally eat Cmd+Space for Spotlight before
+QEMU ever sees it, so `run-vm.sh` passes `full-grab=on`: while the pointer is inside the VM
+window, system combinations go to the guest instead of to macOS, and `Ctrl+Alt+G` (or
+clicking away) hands them back. That grab needs **Accessibility** permission — granted in
+System Settings to the terminal application you launch `run-vm.sh` from, not to `qemu`,
+because a command-line binary is attributed to whatever started it. Without it QEMU prints
+`Could not create event tap, system key combos will not be captured.` and boots anyway.
+`run-vm.sh --no-grab` turns the whole thing off.
 
 Every colour on that desktop comes from `home/chime/theme/` — a palette, a set of *roles*
 that the configs actually read, and the ANSI 16 for terminals. Swapping themes later means
@@ -341,7 +352,8 @@ bento/
 │   ├── lock.nix                  # hyprlock + hypridle
 │   └── theme/                    # colors.nix (palette, roles, ANSI 16) + wallpaper
 ├── PLAN-v1.md                    # the plan
-├── learned/                      # findings log, one file per completed phase
+├── learned/                      # findings log: one file per completed phase, plus
+│   ├── keyboard-capture.md       #   post-v1 changes that belong to no phase
 │   ├── phase-0.md
 │   ├── phase-1.md
 │   ├── phase-2.md

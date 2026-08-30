@@ -4,6 +4,7 @@
 #   ./scripts/run-vm.sh                # Cocoa window + serial console on this terminal
 #   ./scripts/run-vm.sh --headless     # no window; serial console only (what agents use)
 #   ./scripts/run-vm.sh --no-gl        # force software rendering (stock Homebrew QEMU)
+#   ./scripts/run-vm.sh --no-grab      # let macOS keep Cmd+Space and the other system combos
 #   ./scripts/run-vm.sh --reset-vars   # throw away the EFI variable store first
 #   ./scripts/run-vm.sh --memory 4G --cpus 2
 #
@@ -12,6 +13,29 @@
 #
 # Once up:  ssh -p 2222 chime@localhost
 # To quit:  `poweroff` in the guest, or Ctrl-A X at the serial console.
+#
+# The window captures system key combinations, so Cmd+Space opens the guest's launcher
+# instead of Spotlight. That is `full-grab=on`, and it is worth knowing what it does before
+# it surprises you — all of the following is from ui/cocoa.m in the QEMU we build:
+#
+#   * The Mac's Command key is what reaches the guest as Super. Cocoa maps it that way by
+#     default (`swap_opt_cmd` is false), so Omarchy's Super+X scheme is Cmd+X here.
+#   * Command is only forwarded while the *mouse* is grabbed, and with usb-tablet that
+#     happens the moment the pointer enters the window (`mouseEntered:` -> `grabMouse`).
+#     Ctrl+Alt+G releases it, and so does clicking away — the window title says which.
+#   * `full-grab=on` adds a CGEventTap at the head of kCGHIDEventTap, ahead of macOS's own
+#     hotkey handling, and swallows the event when the mouse is grabbed. So Spotlight,
+#     Cmd+Tab and Cmd+Q go to the guest while you are in the window, and to macOS when you
+#     are not. Nothing is captured while another app has focus.
+#   * It needs Accessibility permission, granted to the *terminal application this script
+#     runs from* rather than to qemu — a CLI binary is attributed to whatever launched it.
+#     If it is missing, CGEventTapCreate returns NULL and QEMU prints one line:
+#     "Could not create event tap, system key combos will not be captured." It then runs
+#     perfectly normally, minus the grab, which is the one failure worth watching for.
+#     System Settings -> Privacy & Security -> Accessibility.
+#
+# `--no-grab` turns it off. None of this touches vm-screenshot.sh: QMP `sendkey meta_l-spc`
+# is injected into the emulated keyboard and never goes near the host's.
 #
 # Two host quirks, both measured in Phase 0 (learned/phase-0.md §2):
 #
@@ -62,6 +86,9 @@ CPUS="4"
 SSH_PORT="2222"
 HEADLESS=0
 RESET_VARS=0
+# Capture system key combos so Super+X reaches Hyprland instead of macOS. Default on: the
+# guest is a desktop whose whole keymap hangs off Super, and Cmd+Space is Spotlight's.
+GRAB=1
 # auto: use the GL build if it has been built, the Homebrew one otherwise. The guest
 # config (hosts/bento-vm/default.nix) assumes GL, so defaulting to it keeps the machine
 # running in the mode it was built for; `--no-gl` is the escape hatch and still works.
@@ -76,11 +103,13 @@ while [[ $# -gt 0 ]]; do
     --headless) HEADLESS=1; shift ;;
     --gl) GL=1; GL_EXPLICIT=1; shift ;;
     --no-gl|--software) GL=0; GL_EXPLICIT=1; shift ;;
+    --no-grab) GRAB=0; shift ;;
+    --grab) GRAB=1; shift ;;
     --reset-vars) RESET_VARS=1; shift ;;
     --memory) MEMORY="${2:?--memory needs an argument}"; shift 2 ;;
     --cpus) CPUS="${2:?--cpus needs an argument}"; shift 2 ;;
     --ssh-port) SSH_PORT="${2:?--ssh-port needs an argument}"; shift 2 ;;
-    -h|--help) sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -116,7 +145,7 @@ elif [[ ${GL} -eq 1 && ! -x ${GL_QEMU} ]]; then
 fi
 
 gpu_device="virtio-gpu-pci,xres=${GPU_XRES},yres=${GPU_YRES}"
-display_args=(-display cocoa)
+cocoa_opts="cocoa"
 
 if [[ ${GL} -eq 1 ]]; then
   QEMU="${GL_QEMU}"
@@ -124,8 +153,16 @@ if [[ ${GL} -eq 1 ]]; then
   # gl=es, not gl=on: ANGLE implements GL ES over Metal. macOS's own OpenGL stops at
   # 4.1 and virglrenderer wants more than that, which is why ANGLE is in the picture
   # at all (learned/phase-6.md §1).
-  display_args=(-display "cocoa,gl=es")
+  cocoa_opts+=",gl=es"
 fi
+
+if [[ ${GRAB} -eq 1 ]]; then
+  # full-grab is a base-DisplayCocoa option, present in both QEMUs — it needs no patch and
+  # no GL. See the header for what it captures and why it can fail quietly.
+  cocoa_opts+=",full-grab=on"
+fi
+
+display_args=(-display "${cocoa_opts}")
 
 if [[ ${HEADLESS} -eq 1 ]]; then
   # virtio-gpu-gl needs a display backend that can hand it a GL context; `-display none`
@@ -151,6 +188,15 @@ if [[ ${GL} -eq 1 ]]; then
   echo "    VirGL: ${gpu_device%%,*} on $("${QEMU}" --version | head -1)"
 else
   echo "    software rendering: ${gpu_device%%,*}"
+fi
+if [[ ${HEADLESS} -eq 0 ]]; then
+  if [[ ${GRAB} -eq 1 ]]; then
+    echo "    keyboard: system combos captured — Cmd is Super, Ctrl-Alt-G releases the grab"
+    echo "              (a 'Could not create event tap' line below means macOS Accessibility"
+    echo "               is not granted to this terminal, and Cmd+Space is still Spotlight)"
+  else
+    echo "    keyboard: not grabbed — macOS keeps Cmd+Space and the other system combos"
+  fi
 fi
 echo "    serial console follows; Ctrl-A X to kill the VM"
 echo "    QMP on ${QMP_SOCK} (screendump, sendkey)"
