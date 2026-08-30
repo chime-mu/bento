@@ -122,9 +122,13 @@ Phase 4 added the Omarchy foundations on top: **waybar** across the top, **walke
 Super+Space (with **elephant** behind it), **mako** for notifications, **hyprlock** +
 **hypridle**, and **swaybg** holding a generated Tokyo Night wallpaper.
 
+Phase 5 put the software on it: **Ghostty** as the terminal, **Chromium** as the browser,
+a LazyVim-flavoured **Neovim**, and **Claude Code**.
+
 | Key | Does |
 |---|---|
-| `Super+Return` | terminal (`foot` for now; ghostty in Phase 5) |
+| `Super+Return` | terminal (`ghostty`; `foot` stays installed as the fallback) |
+| `Super+B` | browser (`chromium`) |
 | `Super+Space` | launcher |
 | `Super+L` | lock |
 | `Super+W` | close window |
@@ -136,8 +140,9 @@ Super+Space (with **elephant** behind it), **mako** for notifications, **hyprloc
 
 Every colour on that desktop comes from `home/chime/theme/` — a palette, a set of *roles*
 that the configs actually read, and the ANSI 16 for terminals. Swapping themes later means
-another file exporting the same role names. `Super+B` is deliberately unbound until
-chromium arrives in Phase 5.
+another file exporting the same role names. Both terminals and Neovim read that same
+theme; ghostty gets it as a named theme file, and Neovim gets it from `tokyonight.nvim`
+upstream, which is where the palette came from in the first place.
 
 The wallpaper is generated rather than downloaded, so the repo carries no image of unknown
 provenance:

@@ -32,11 +32,12 @@ let
     runtimeInputs = [
       pkgs.git
       pkgs.coreutils
-      # `bento doctor` only. systemd for failed units, util-linux for uptime, and the
-      # rest of coreutils for df/stat — all of them present on any NixOS anyway, but
-      # writeShellApplication runs shellcheck against a PATH built from exactly this list.
+      # `bento doctor`'s `systemctl list-units --state=failed`. Present on any NixOS
+      # anyway, but writeShellApplication builds the script's PATH from exactly this
+      # list, so anything not named here is only found by falling through to the
+      # caller's PATH — which is fine for `nixos-rebuild` and `nixos-version` (they come
+      # from the system profile by design) and not fine for a dependency.
       pkgs.systemd
-      pkgs.util-linux
       nix
     ];
 
@@ -194,11 +195,10 @@ let
       # exactly when this has to still produce output.
       cmd_doctor() {
         local flake_dir="''${BENTO_FLAKE:-$HOME/bento}"
-        local field="%-15s %s\n"
 
         echo "── this machine ──────────────────────────────────────────────"
-        printf "$field" "host" "$(uname -n) ($(uname -m), $(uname -r))"
-        printf "$field" "nixos" "$(nixos-version 2>/dev/null || echo unknown)"
+        printf '%-15s %s\n' "host" "$(uname -n) ($(uname -m), $(uname -r))"
+        printf '%-15s %s\n' "nixos" "$(nixos-version 2>/dev/null || echo unknown)"
 
         # The commit the *running* system was built from — flake.nix stamps it into
         # `system.configurationRevision` (learned/phase-2.md §7). Compared against the
@@ -206,39 +206,39 @@ let
         # running?", which is the first question after anything breaks here.
         local running_rev
         running_rev="$(nixos-version --configuration-revision 2>/dev/null || true)"
-        printf "$field" "built from" "''${running_rev:-unknown}"
+        printf '%-15s %s\n' "built from" "''${running_rev:-unknown}"
 
         local generation
         generation="$(readlink /nix/var/nix/profiles/system 2>/dev/null || true)"
         generation="''${generation#system-}"
         generation="''${generation%-link}"
-        printf "$field" "generation" "''${generation:-unknown}"
+        printf '%-15s %s\n' "generation" "''${generation:-unknown}"
 
         # `stat` does not dereference by default, so this is the symlink's own mtime —
         # when switch-to-configuration last pointed it somewhere. The store path behind it
         # would report the epoch, since Nix normalises timestamps.
-        printf "$field" "activated" "$(stat -c %y /run/current-system 2>/dev/null | cut -d. -f1 || true)"
+        printf '%-15s %s\n' "activated" "$(stat -c %y /run/current-system 2>/dev/null | cut -d. -f1 || true)"
         echo
 
         echo "── the flake ─────────────────────────────────────────────────"
-        printf "$field" "path" "$flake_dir"
-        printf "$field" "configuration" "$CONFIG"
+        printf '%-15s %s\n' "path" "$flake_dir"
+        printf '%-15s %s\n' "configuration" "$CONFIG"
 
         if [ ! -e "$flake_dir/flake.nix" ]; then
-          printf "$field" "state" "MISSING — no flake.nix here, 'bento rebuild' cannot run"
+          printf '%-15s %s\n' "state" "MISSING — no flake.nix here, 'bento rebuild' cannot run"
         elif ! git -C "$flake_dir" rev-parse --git-dir >/dev/null 2>&1; then
-          printf "$field" "state" "not a git repository — Nix will see only the working tree"
+          printf '%-15s %s\n' "state" "not a git repository — Nix will see only the working tree"
         else
           local head dirty
           head="$(git -C "$flake_dir" rev-parse HEAD 2>/dev/null || true)"
           dirty="$(git -C "$flake_dir" status --porcelain 2>/dev/null || true)"
 
-          printf "$field" "HEAD" "$head $(git -C "$flake_dir" log -1 --format=%s 2>/dev/null || true)"
+          printf '%-15s %s\n' "HEAD" "$head $(git -C "$flake_dir" log -1 --format=%s 2>/dev/null || true)"
 
           if [ -z "$dirty" ]; then
-            printf "$field" "working tree" "clean"
+            printf '%-15s %s\n' "working tree" "clean"
           else
-            printf "$field" "working tree" "dirty"
+            printf '%-15s %s\n' "working tree" "dirty"
             printf '                %s\n' "$dirty"
           fi
 
@@ -249,14 +249,14 @@ let
           local untracked
           untracked="$(git -C "$flake_dir" ls-files --others --exclude-standard 2>/dev/null || true)"
           if [ -n "$untracked" ]; then
-            printf "$field" "untracked" "invisible to Nix until added:"
+            printf '%-15s %s\n' "untracked" "invisible to Nix until added:"
             printf '                %s\n' "$untracked"
           fi
 
           if [ -n "$head" ] && [ "$head" = "$running_rev" ] && [ -z "$dirty" ]; then
-            printf "$field" "in sync" "yes — the running system is this commit"
+            printf '%-15s %s\n' "in sync" "yes — the running system is this commit"
           else
-            printf "$field" "in sync" "no — 'bento rebuild' would change this machine"
+            printf '%-15s %s\n' "in sync" "no — 'bento rebuild' would change this machine"
           fi
         fi
         echo
@@ -264,16 +264,16 @@ let
         echo "── health ────────────────────────────────────────────────────"
         local failed
         failed="$(systemctl list-units --state=failed --no-legend --plain 2>/dev/null | cut -d' ' -f1 || true)"
-        printf "$field" "failed units" "''${failed:-none}"
+        printf '%-15s %s\n' "failed units" "''${failed:-none}"
 
         # The user bus carries most of this desktop — waybar, walker, elephant, mako,
         # swaybg, hypridle — and none of them is a system unit, so a system-only check
         # reports a healthy machine with no bar on it (learned/phase-4.md §7).
         local failed_user
         failed_user="$(systemctl --user list-units --state=failed --no-legend --plain 2>/dev/null | cut -d' ' -f1 || true)"
-        printf "$field" "failed (user)" "''${failed_user:-none}"
+        printf '%-15s %s\n' "failed (user)" "''${failed_user:-none}"
 
-        printf "$field" "disk" "$(df -h --output=used,avail,pcent / 2>/dev/null | tail -1 | tr -s ' ' || true) used/avail on /"
+        printf '%-15s %s\n' "disk" "$(df -h --output=used,avail,pcent / 2>/dev/null | tail -1 | tr -s ' ' || true) used/avail on /"
       }
 
       case "''${1:-help}" in
