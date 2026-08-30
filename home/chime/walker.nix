@@ -28,6 +28,10 @@ in
       "desktopapplications"
       "calc"
       "runner"
+      # Added in Phase 5: it opens its result with `xdg-open`, which now resolves to
+      # chromium (home/chime/chromium.nix). Through Phase 4 this was left out precisely
+      # because there was nothing to hand the URL to.
+      "websearch"
     ];
   };
 
@@ -48,12 +52,14 @@ in
       providers = {
         # What a bare query searches. `runner` is added to the stock set (which is
         # applications + calc + websearch) because on a machine you are rebuilding all day
-        # "run this binary" is a launcher's second job. websearch is dropped: there is no
-        # browser installed until Phase 5, so it would offer an action nothing can take.
+        # "run this binary" is a launcher's second job. `websearch` was dropped through
+        # Phase 4 — with no browser installed it offered an action nothing could take —
+        # and comes back here now that Super+B has something behind it.
         default = [
           "desktopapplications"
           "calc"
           "runner"
+          "websearch"
         ];
         empty = [ "desktopapplications" ];
       };

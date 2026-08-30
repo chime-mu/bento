@@ -32,6 +32,11 @@ let
     runtimeInputs = [
       pkgs.git
       pkgs.coreutils
+      # `bento doctor` only. systemd for failed units, util-linux for uptime, and the
+      # rest of coreutils for df/stat — all of them present on any NixOS anyway, but
+      # writeShellApplication runs shellcheck against a PATH built from exactly this list.
+      pkgs.systemd
+      pkgs.util-linux
       nix
     ];
 
@@ -53,6 +58,11 @@ let
             Drop old generations and sweep the store. PERIOD defaults to 30d.
             `--all` keeps only the running generation — on this VM that also throws
             away every entry you could boot back to, so prefer a period.
+
+        bento doctor
+            What this machine is running, and whether anything is wrong with it:
+            flake revision against the running system, last rebuild, failed units,
+            disk. Cheap context to hand an agent before it changes anything.
 
         bento help
 
@@ -170,10 +180,107 @@ let
         df -h /
       }
 
+      # `bento doctor` — PLAN-v1 §5 step 4's "prints flake status, last rebuild, disk
+      # space — cheap context for the agent".
+      #
+      # It lives here rather than in modules/agent.nix, where the plan puts it, because it
+      # is a verb of `bento` and this file owns the subcommand dispatch
+      # (learned/phase-2.md §6 named this as the seam). A separate `bento-doctor` binary
+      # would give the machine two CLIs that both answer questions about it.
+      #
+      # Everything printed is read, never computed: the point is to be safe to run at any
+      # moment, including as the first thing an agent does. It changes nothing, and it is
+      # deliberately not `set -e`-fragile — a machine with something wrong with it is
+      # exactly when this has to still produce output.
+      cmd_doctor() {
+        local flake_dir="''${BENTO_FLAKE:-$HOME/bento}"
+        local field="%-15s %s\n"
+
+        echo "── this machine ──────────────────────────────────────────────"
+        printf "$field" "host" "$(uname -n) ($(uname -m), $(uname -r))"
+        printf "$field" "nixos" "$(nixos-version 2>/dev/null || echo unknown)"
+
+        # The commit the *running* system was built from — flake.nix stamps it into
+        # `system.configurationRevision` (learned/phase-2.md §7). Compared against the
+        # flake's HEAD below, this is the answer to "is what I am reading what I am
+        # running?", which is the first question after anything breaks here.
+        local running_rev
+        running_rev="$(nixos-version --configuration-revision 2>/dev/null || true)"
+        printf "$field" "built from" "''${running_rev:-unknown}"
+
+        local generation
+        generation="$(readlink /nix/var/nix/profiles/system 2>/dev/null || true)"
+        generation="''${generation#system-}"
+        generation="''${generation%-link}"
+        printf "$field" "generation" "''${generation:-unknown}"
+
+        # `stat` does not dereference by default, so this is the symlink's own mtime —
+        # when switch-to-configuration last pointed it somewhere. The store path behind it
+        # would report the epoch, since Nix normalises timestamps.
+        printf "$field" "activated" "$(stat -c %y /run/current-system 2>/dev/null | cut -d. -f1 || true)"
+        echo
+
+        echo "── the flake ─────────────────────────────────────────────────"
+        printf "$field" "path" "$flake_dir"
+        printf "$field" "configuration" "$CONFIG"
+
+        if [ ! -e "$flake_dir/flake.nix" ]; then
+          printf "$field" "state" "MISSING — no flake.nix here, 'bento rebuild' cannot run"
+        elif ! git -C "$flake_dir" rev-parse --git-dir >/dev/null 2>&1; then
+          printf "$field" "state" "not a git repository — Nix will see only the working tree"
+        else
+          local head dirty
+          head="$(git -C "$flake_dir" rev-parse HEAD 2>/dev/null || true)"
+          dirty="$(git -C "$flake_dir" status --porcelain 2>/dev/null || true)"
+
+          printf "$field" "HEAD" "$head $(git -C "$flake_dir" log -1 --format=%s 2>/dev/null || true)"
+
+          if [ -z "$dirty" ]; then
+            printf "$field" "working tree" "clean"
+          else
+            printf "$field" "working tree" "dirty"
+            printf '                %s\n' "$dirty"
+          fi
+
+          # A flake only ever sees what git tracks, so an untracked file is invisible to
+          # the rebuild that is supposed to apply it — silently, if nothing imports it yet
+          # (learned/phase-2.md §3). `bento rebuild` stages these for you; `doctor` says so
+          # before you wonder why an edit did nothing.
+          local untracked
+          untracked="$(git -C "$flake_dir" ls-files --others --exclude-standard 2>/dev/null || true)"
+          if [ -n "$untracked" ]; then
+            printf "$field" "untracked" "invisible to Nix until added:"
+            printf '                %s\n' "$untracked"
+          fi
+
+          if [ -n "$head" ] && [ "$head" = "$running_rev" ] && [ -z "$dirty" ]; then
+            printf "$field" "in sync" "yes — the running system is this commit"
+          else
+            printf "$field" "in sync" "no — 'bento rebuild' would change this machine"
+          fi
+        fi
+        echo
+
+        echo "── health ────────────────────────────────────────────────────"
+        local failed
+        failed="$(systemctl list-units --state=failed --no-legend --plain 2>/dev/null | cut -d' ' -f1 || true)"
+        printf "$field" "failed units" "''${failed:-none}"
+
+        # The user bus carries most of this desktop — waybar, walker, elephant, mako,
+        # swaybg, hypridle — and none of them is a system unit, so a system-only check
+        # reports a healthy machine with no bar on it (learned/phase-4.md §7).
+        local failed_user
+        failed_user="$(systemctl --user list-units --state=failed --no-legend --plain 2>/dev/null | cut -d' ' -f1 || true)"
+        printf "$field" "failed (user)" "''${failed_user:-none}"
+
+        printf "$field" "disk" "$(df -h --output=used,avail,pcent / 2>/dev/null | tail -1 | tr -s ' ' || true) used/avail on /"
+      }
+
       case "''${1:-help}" in
         rebuild) shift; cmd_rebuild "$@" ;;
         update)  shift; cmd_update "$@" ;;
         gc)      shift; cmd_gc "$@" ;;
+        doctor)  shift; cmd_doctor "$@" ;;
         help | -h | --help) usage ;;
         *)
           echo "bento: unknown subcommand: $1" >&2

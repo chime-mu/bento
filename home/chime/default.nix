@@ -2,17 +2,21 @@
 #
 # One file per program, and `./theme` is not among them — it is a plain expression that
 # each of the others imports for its colours, font and wallpaper, not a module with
-# options of its own. Phase 5 adds ghostty.nix and neovim.nix here.
+# options of its own. (`./neovim` is a directory holding one Lua file, read by
+# ./neovim.nix — also not a module.)
 { ... }:
 {
   imports = [
     ./hyprland.nix
+    ./ghostty.nix
     ./foot.nix
     ./waybar.nix
     ./walker.nix
     ./mako.nix
     ./wallpaper.nix
     ./lock.nix
+    ./chromium.nix
+    ./neovim.nix
   ];
 
   home.stateVersion = "26.11";

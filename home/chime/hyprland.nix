@@ -51,9 +51,15 @@ in
 
     settings = {
       "$mod" = "SUPER";
-      # Phase 5 replaces this with ghostty and keeps foot as the fallback. One variable, so
-      # that is a one-line change and every bind follows it.
-      "$terminal" = "foot";
+      # Phase 5's one-line change, exactly as learned/phase-3.md §8 promised: every bind
+      # below follows this variable. `foot` is still installed and still themed
+      # (home/chime/foot.nix) — it is the fallback that cannot be the reason a graphical
+      # test fails, and putting it back is editing this line.
+      "$terminal" = "ghostty";
+      # Phase 5's browser. `xdg-open` resolves to the same binary through
+      # home/chime/chromium.nix's mimeApps entry, so the key and the URL handler cannot
+      # drift apart.
+      "$browser" = "chromium";
       # Phase 4's launcher. walker runs as a GApplication service (home/chime/walker.nix),
       # so this is a message to a process that is already up, not a cold GTK4 start.
       "$launcher" = "walker";
@@ -117,11 +123,12 @@ in
         accel_profile = "flat";
       };
 
-      # Omarchy's scheme, as far as there is software to bind to. Super+B (the browser)
-      # arrives with chromium in Phase 5 and is absent rather than bound to a placeholder,
-      # so that a key which does nothing means "not built yet" instead of "broken".
+      # Omarchy's scheme. Super+B is bound as of Phase 5 — through Phase 4 it was
+      # deliberately absent rather than bound to a placeholder, so that a key which did
+      # nothing meant "not built yet" instead of "broken".
       bind = [
         "$mod, RETURN, exec, $terminal"
+        "$mod, B, exec, $browser"
         "$mod, SPACE, exec, $launcher"
         "$mod, W, killactive,"
         "$mod, F, fullscreen, 0"

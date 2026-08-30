@@ -11,6 +11,7 @@
     ../../modules/bento-cli.nix
     ../../modules/desktop.nix
     ../../modules/fonts.nix
+    ../../modules/agent.nix
   ];
 
   # Which `nixosConfigurations.<name>` `bento rebuild` applies. Stated here rather than
