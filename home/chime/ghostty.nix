@@ -8,11 +8,53 @@
 # already consumes in the same shape. That is the whole point of the third vocabulary in
 # home/chime/theme/colors.nix: a terminal has no "accent", it has colour 4, and both
 # terminals ask the theme the same question and get the same answer.
-{ ... }:
+{ pkgs, ... }:
 let
   theme = import ./theme;
   inherit (theme) colors font;
   t = colors.terminal;
+
+  # **Ghostty is the one thing Phase 6's GPU made worse, and this is the fix.**
+  #
+  # Under llvmpipe it drew fine (learned/phase-5.md §6). Under VirGL it does not start at
+  # all: a full-screen "Oh, no. Unable to acquire an OpenGL context for rendering."
+  #
+  # The reason is in `glxinfo -B` and it is a property of the whole GL stack, not of
+  # ghostty. virgl here runs on ANGLE, which is a GL *ES* implementation over Metal, so
+  # the guest is offered `Max GLES[23] profile version: 3.0` and
+  # `Max core profile version: 0.0` — there is no desktop GL core profile behind this
+  # GPU at all. llvmpipe, being a full software GL, offered one.
+  #
+  # And ghostty insists on desktop GL. It says so in its own startup log, overriding
+  # whatever the environment asked for, so GDK_DEBUG=gl-gles does nothing:
+  #
+  #   warning(gtk_ghostty_application): setting GDK_DISABLE=gles-api,vulkan
+  #
+  # So this one process gets a software GL stack while everything else keeps the GPU.
+  # `LIBGL_ALWAYS_SOFTWARE` is the same variable learned/phase-3.md §2 forbids — and the
+  # prohibition is intact, because it is about the *compositor*: given it, aquamarine gets
+  # an EGL device with no DRM node behind it and fails to build a renderer on every commit
+  # (8504 failures, a 7.8 MB log). A client that only wants a GL context for its own
+  # surface has no such problem. The variable is not wrong; setting it session-wide is.
+  # Scoping is the whole point, which is why it lives on the binary and not in
+  # `environment.sessionVariables`.
+  #
+  # Verified by sampling the scanout: the ghostty window is **96.9 % #1a1b26**, the same
+  # number learned/phase-5.md §6 recorded for a working terminal under software rendering.
+  #
+  # symlinkJoin, not overrideAttrs: overriding the derivation would rebuild ghostty from
+  # source inside the VM, which PLAN-v1 risk #2 exists to prevent. This is a trivial
+  # derivation over the cached build. The desktop entry ships `Exec=ghostty` by bare name,
+  # so the launcher and `$terminal` in hyprland.nix both resolve to this wrapper through
+  # PATH without either of them mentioning it.
+  ghostty-soft-gl = pkgs.symlinkJoin {
+    name = "ghostty-soft-gl";
+    paths = [ pkgs.ghostty ];
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+    postBuild = ''
+      wrapProgram $out/bin/ghostty --set LIBGL_ALWAYS_SOFTWARE 1
+    '';
+  };
 
   # Ghostty writes colours as `#rrggbb`; the theme stores bare hex because hyprlang wants
   # it that way inside `rgb()`. `colors.css` is the same set with the `#` already on.
@@ -26,6 +68,10 @@ in
 {
   programs.ghostty = {
     enable = true;
+
+    # See the comment on ghostty-soft-gl above: ghostty demands a desktop GL context and
+    # VirGL/ANGLE offers only GLES, so this one binary renders on llvmpipe.
+    package = ghostty-soft-gl;
 
     # A named theme file rather than `background`/`foreground`/`palette` inline in the
     # main config. Ghostty resolves `theme = bento` out of
