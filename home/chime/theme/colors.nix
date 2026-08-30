@@ -72,9 +72,32 @@ let
     error = palette.red;
     urgent = palette.red1;
   };
+  # The 16 ANSI colours, which are a third vocabulary again: a terminal does not have a
+  # "border" or an "accent", it has colour 4. Tokyo Night maps most bright variants onto
+  # the same value as the normal one — that is upstream's choice, not an omission here;
+  # only black and white actually brighten.
+  terminal = {
+    black = palette.bgDark;
+    red = palette.red;
+    green = palette.green;
+    yellow = palette.yellow;
+    blue = palette.blue;
+    magenta = palette.magenta;
+    cyan = palette.cyan;
+    white = palette.fgDark;
+
+    brightBlack = palette.terminalBlack;
+    brightRed = palette.red;
+    brightGreen = palette.green;
+    brightYellow = palette.yellow;
+    brightBlue = palette.blue;
+    brightMagenta = palette.magenta;
+    brightCyan = palette.cyan;
+    brightWhite = palette.fg;
+  };
 in
 {
-  inherit palette;
+  inherit palette terminal;
 
   # Bare hex, for hyprlang and anywhere else that supplies its own wrapper.
   hex = role;

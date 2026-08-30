@@ -7,6 +7,7 @@
 {
   imports = [
     ./hyprland.nix
+    ./foot.nix
     ./waybar.nix
     ./walker.nix
     ./mako.nix

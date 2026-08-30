@@ -85,11 +85,9 @@ in
     };
 
     environment.systemPackages = with pkgs; [
-      # The terminal for Phase 3. PLAN-v1 makes Ghostty the daily driver in Phase 5 and
-      # keeps foot as the fallback; foot lands first because it is small, has no GPU
-      # expectations at all, and gives the Super+Return acceptance criterion something to
-      # open that cannot itself be the reason the criterion fails.
-      foot
+      # foot used to be here. It moved to home/chime/foot.nix in Phase 4, when it acquired
+      # a theme: home-manager's `programs.foot` has no nullable `package`, so keeping this
+      # entry as well would put two foots on PATH.
 
       # How an agent with no screen sees the screen: `grim` writes the compositor's own
       # output to a PNG over ssh. (The host can also read the QEMU scanout with a QMP
