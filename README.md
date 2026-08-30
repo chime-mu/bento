@@ -22,10 +22,10 @@ v1 runs as a QEMU virtual machine on an Apple Silicon MacBook. Bare metal comes 
 | 0 — macOS host prerequisites | ✅ **complete** |
 | 1 — Flake skeleton + bootable headless image | ✅ **complete** |
 | 2 — Iteration loop from inside the VM | ✅ **complete** |
-| 3 — Wayland + Hyprland (software rendering) | ✅ **complete** |
+| 3 — Wayland + Hyprland | ✅ **complete** |
 | 4 — Omarchy visual foundations | ✅ **complete** |
 | 5 — My software + the agent | ✅ **complete** |
-| 6 — GPU acceleration (stretch, allowed to fail) | ⬜ |
+| 6 — GPU acceleration (stretch, allowed to fail) | ✅ **complete** — it did not fail |
 
 ## Read these first
 
@@ -38,6 +38,7 @@ v1 runs as a QEMU virtual machine on an Apple Silicon MacBook. Bare metal comes 
 | **[`learned/phase-3.md`](learned/phase-3.md)** | Measured findings from Phase 3 — how to screenshot and type into the VM without a human, and why both of the software-rendering environment variables everyone recommends are wrong here. |
 | **[`learned/phase-4.md`](learned/phase-4.md)** | Measured findings from Phase 4 — why GTK 4 draws nothing without `GSK_RENDERER=cairo`, why hyprpaper segfaults on virtio-gpu, and why Nerd Font glyphs have to be written as codepoints. |
 | **[`learned/phase-5.md`](learned/phase-5.md)** | Measured findings from Phase 5 — why a launcher cannot see software a rebuild just installed, which Node builds from source, and why every nvim-treesitter guide now configures nothing. |
+| **[`learned/phase-6.md`](learned/phase-6.md)** | Measured findings from Phase 6 — how the guest reaches Metal, why screenshots silently come back black once it does, the one application GPU acceleration broke, and why the obvious benchmark answers backwards. |
 
 ## Host setup
 
@@ -96,11 +97,40 @@ If the VM ever comes up at a `Shell>` prompt instead of booting, the EFI variabl
 a stale boot entry — most likely because the emulated hardware changed underneath it.
 `./scripts/run-vm.sh --reset-vars` clears it.
 
+### GPU acceleration
+
+`run-vm.sh` boots with **VirGL** whenever a GL-capable QEMU has been built, which is the
+normal state of this machine:
+
+```bash
+./scripts/build-qemu-gl.sh          # once — builds QEMU 10.1.2 into ~/.local/state/bento
+./scripts/build-qemu-gl.sh --check  # what is installed, and is it entitled for hvf
+./scripts/run-vm.sh --no-gl         # force software rendering instead
+```
+
+Homebrew's QEMU has no OpenGL in it and upstream QEMU's Cocoa UI has no GL code in *any*
+version, so this is a patched local build — ANGLE (GL ES → Metal) plus virglrenderer plus
+akihikodaki's macOS VirGL series. It needs no sudo, replaces nothing, and leaves the
+Homebrew binary in place as the `--no-gl` fallback. The guest ends up reporting
+
+```
+virgl (ANGLE (Apple, Apple M4, OpenGL 4.1 Metal - 90.5))   Accelerated: yes
+```
+
+Two things to know before relying on it, both in `learned/phase-6.md`: **screenshots have
+to be taken differently** (below), and this GPU is *faster but narrower* than software
+rendering — it offers no desktop GL core profile, which is why ghostty carries a
+`LIBGL_ALWAYS_SOFTWARE` wrapper scoped to that one binary.
+
 ## Seeing the screen without looking at it
 
 `run-vm.sh` opens a QMP socket at `artifacts/qmp.sock`, which is enough to photograph the
 guest's display and to press keys on its keyboard — under `--headless`, from a script, with
-no window on screen:
+no window on screen. **Under VirGL the picture comes from `grim` inside the guest instead**,
+because QEMU's `screendump` can only see the pixman surface and the scanout is a GL texture
+by then — it returns an all-black PNG rather than an error. `vm-screenshot.sh` picks the
+right path by looking at what GPU the running QEMU was given; `--scanout` and `--guest`
+override it. Keystrokes always go through QEMU's emulated keyboard, in both modes.
 
 ```bash
 ./scripts/vm-screenshot.sh                                  # -> artifacts/screen-<stamp>.png
@@ -125,9 +155,11 @@ as numbers and compare them with `home/chime/theme/`:
 
 ## The desktop
 
-The VM boots straight into Hyprland — greetd autologins `chime`, no password — and the
-session runs on llvmpipe, because this host's QEMU has no OpenGL at all
-(`learned/phase-0.md` §2). Expect it to be sluggish; that is Phase 6's problem.
+The VM boots straight into Hyprland — greetd autologins `chime`, no password — and since
+Phase 6 the session runs on the M4's GPU through VirGL, with animations, blur, shadows and
+hardware cursors on. Under `--no-gl` it falls back to llvmpipe by itself and still works;
+it is just slow, and by a wide margin — the same 80 animated workspace switches cost the
+compositor 0.03 CPU-seconds with the GPU and 26.16 without it.
 
 Phase 4 added the Omarchy foundations on top: **waybar** across the top, **walker** on
 Super+Space (with **elephant** behind it), **mako** for notifications, **hyprlock** +
@@ -296,7 +328,7 @@ bento/
 ├── home/chime/
 │   ├── default.nix               # home-manager entry point
 │   ├── hyprland.nix              # keybindings, and what to switch off with no GPU
-│   ├── ghostty.nix               # the terminal
+│   ├── ghostty.nix               # the terminal (+ its software-GL wrapper — phase-6 §5)
 │   ├── foot.nix                  # the fallback terminal, themed the same way
 │   ├── chromium.nix              # the browser, and the xdg-open default
 │   ├── neovim.nix                # the editor: LazyVim's plugin set, declaratively
@@ -304,7 +336,7 @@ bento/
 │   ├── waybar.nix                # the bar
 │   ├── walker.nix                # the launcher + elephant
 │   ├── mako.nix                  # notifications
-│   ├── wallpaper.nix             # swaybg (hyprpaper crashes here — phase-4 §3)
+│   ├── wallpaper.nix             # swaybg (hyprpaper needs a GPU — phase-4 §3, phase-6 §7)
 │   ├── lock.nix                  # hyprlock + hypridle
 │   └── theme/                    # colors.nix (palette, roles, ANSI 16) + wallpaper
 ├── PLAN-v1.md                    # the plan
@@ -314,13 +346,16 @@ bento/
 │   ├── phase-2.md
 │   ├── phase-3.md
 │   ├── phase-4.md
-│   └── phase-5.md
+│   ├── phase-5.md
+│   └── phase-6.md
 └── scripts/
     ├── setup-linux-builder.sh    # one-time root setup of the aarch64-linux builder
     ├── start-linux-builder.sh    # start/check the builder VM (no sudo)
     ├── build-image.sh            # build the qcow2 and stage artifacts/bento.qcow2
     ├── make-wallpaper.py         # regenerate home/chime/theme/tokyo-night.png
-    ├── run-vm.sh                 # boot it in QEMU
+    ├── run-vm.sh                 # boot it in QEMU (VirGL by default; --no-gl)
+    ├── build-qemu-gl.sh          # build the GL-capable QEMU the host has no bottle for
+    ├── patches/                  # akihikodaki's macOS VirGL series, pinned by sha256
     ├── vm-screenshot.sh          # photograph the guest's screen / send it keystrokes
     ├── screen-colors.py          # …and read the colours back out of that PNG, as numbers
     └── vm-sync.sh                # move commits between this repo and the VM's ~/bento

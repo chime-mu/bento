@@ -23,7 +23,7 @@ v1 runs as a QEMU virtual machine on an Apple Silicon MacBook. Bare-metal comes 
 | Fonts / theme | CaskaydiaMono Nerd Font, Tokyo Night as the first theme (Omarchy's defaults) |
 | v1 software | Ghostty (terminal), Chromium (browser), Neovim (LazyVim-style), Claude Code, git + dev basics |
 | Names | OS/flake/hostname: `bento` · VM host: `bento-vm` · user: `chime` |
-| Graphics strategy | **Software rendering** — confirmed in Phase 0 as the *only* option: the host's QEMU 11.1.1 has no OpenGL/VirGL support compiled in. Acceleration requires replacing host QEMU (Phase 6, stretch) |
+| Graphics strategy | **VirGL, as of Phase 6.** Phase 0 was right that the host's QEMU 11.1.1 has no OpenGL compiled in and that acceleration means *replacing* it; Phase 6 did so (`scripts/build-qemu-gl.sh`) and the guest now renders on the M4's GPU. Software rendering survives as the `run-vm.sh --no-gl` fallback, still working |
 
 Prior art: [try-omarchy](https://github.com/themartiano/try-omarchy) runs an ARM64 Arch
 guest with QEMU + Hypervisor.framework + VirGL. We borrow its QEMU approach; the guest
@@ -510,7 +510,48 @@ credentials); Ghostty, Chromium, and Neovim all launch from the Walker launcher.
 `./scripts/vm-screenshot.sh --key meta_l-spc --type Ghostty --key ret` opens the launcher,
 searches it and presses the entry, and elephant's journal names what it activated.)*
 
-### Phase 6 (stretch) — GPU acceleration
+### Phase 6 (stretch) — GPU acceleration — ✅ **COMPLETE (2026-08-30)**
+
+> 📓 **Full findings log: [`learned/phase-6.md`](learned/phase-6.md)**. It covers why
+> upstream QEMU cannot be reconfigured into this (its Cocoa UI has no GL code in any
+> version, including master), why QMP `screendump` silently returns a black PNG under GL
+> and what replaces it, why `GSK_RENDERER=cairo` was *not* deleted as Phases 4 and 5
+> predicted, the one application the GPU broke, and why the obvious benchmark says the
+> opposite of the truth.
+
+**Acceptance passed. The phase that was allowed to fail did not.** `glxinfo -B` in the
+guest reports **`virgl (ANGLE (Apple, Apple M4, OpenGL 4.1 Metal - 90.5))`** with
+`Accelerated: yes`, instead of llvmpipe. For the "visibly smooth" half: 80 animated
+workspace switches cost Hyprland **26.16 CPU-seconds under llvmpipe and 0.03 under
+virgl** — 19× faster in wall clock, ~870× less CPU.
+
+**No sudo was required**, which this section and the Phase 5 handoff both expected.
+QEMU's own `make install` runs `scripts/entitlement.sh` and signs the binary for
+`com.apple.security.hypervisor`, so the anticipated code-signing step is a *check*.
+
+**Four substitutions from the steps below, all deliberate:**
+
+1. **We build QEMU 10.1.2 ourselves rather than pouring the tap's `qemu-virgl` bottle.**
+   That bottle links `libspice-server`, which would add 61 formulae (gstreamer and its
+   codecs) and upgrade 20 unrelated ones. `--disable-spice` costs one compile and nothing
+   else — every other dependency was already installed for Homebrew's qemu. Only the three
+   bottled GL formulas (~18 MiB) come from the tap. `scripts/build-qemu-gl.sh`.
+2. **`GSK_RENDERER=cairo` was not deleted** — it was moved *out* of
+   `bento.desktop.softwareRendering` and made unconditional. The option is fixed when the
+   system is built; whether a GPU exists is fixed when the VM is launched, and one disk
+   image serves both. Gated, the variable is wrong in whichever mode it was not built for,
+   and wrong here means an invisible launcher.
+3. **Step 2's "drop the software-rendering env vars for a test session" is inverted for
+   ghostty**, which is the one thing GL made worse: ANGLE is a GL *ES* implementation, so
+   this GPU offers **no desktop GL core profile at all**, and ghostty demands one. It now
+   runs with `LIBGL_ALWAYS_SOFTWARE=1` scoped to that single binary.
+4. **`--gl` is the default rather than a flag**, since the guest config assumes it;
+   `--no-gl` forces the stock path, and `--headless` implies it.
+
+**The reference implementation was right about the mechanism and wrong about nothing** —
+try-omarchy's ANGLE + virglrenderer + patched-cocoa recipe (`learned/phase-0.md` §3) is
+exactly what works. What it does not tell you is the cost, which is §3 and §5 of the
+findings log.
 
 Only after Phases 1–5 are stable. Software rendering will be the painful part of v1;
 this phase tries to fix it.
@@ -580,6 +621,9 @@ Re-verify with `-device help | grep gl` before touching the guest.
 
 **Acceptance:** `glxinfo -B` (or `eglinfo`) in the guest reports virgl instead of
 llvmpipe, and Hyprland animations are visibly smooth. *This phase is allowed to fail.*
+*(Both verified — see the header of this section. "Visibly smooth" was turned into a
+number rather than an impression, because the obvious benchmark answers it backwards:
+`learned/phase-6.md` §6.)*
 
 ---
 
@@ -605,7 +649,11 @@ llvmpipe, and Hyprland animations are visibly smooth. *This phase is allowed to 
 
 1. **Graphics on macOS-hosted QEMU** — the big one, and Phase 0 confirmed the bad case:
    the host QEMU has no GL at all, so Hyprland *will* run on llvmpipe in v1 and will
-   feel slow. Accepted for v1; Phase 6 is the (failable) fix.
+   feel slow. Accepted for v1; Phase 6 is the (failable) fix. **✅ Retired — Phase 6
+   landed VirGL.** The residual risk changed shape rather than disappearing: the GPU is
+   *faster but narrower* than llvmpipe (no desktop GL core profile), which is what broke
+   ghostty, and the host QEMU is now a local build that a macOS or nixpkgs update could
+   break. `--no-gl` is the escape hatch and is kept working for that reason.
 2. **aarch64 binary cache gaps** (Chromium, Ghostty) — never build these from source in
    the VM; substitute and report instead.
 3. **Hyprland-in-VM env vars churn** — variable names for software rendering / cursors
