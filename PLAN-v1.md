@@ -71,6 +71,11 @@ at the screen can, print exact instructions for me to verify) before the phase i
 
 ### Phase 0 — macOS host prerequisites — ✅ **COMPLETE (2026-08-30)**
 
+> 📓 **Full findings log: [`learned/phase-0.md`](learned/phase-0.md)** — read it before
+> Phase 1. It covers the host graphics situation, try-omarchy's VirGL recipe and guest
+> env vars, Determinate Nix's three documentation-breaking differences, how
+> `darwin.linux-builder` really works, and the macOS/shell gotchas that cost us time.
+
 **Acceptance test passed.** A forced, unsubstitutable `aarch64-linux` derivation built
 on `ssh-ng://builder@linux-builder` and returned `aarch64 / Linux`. The Mac can now
 build Linux packages, which is everything Phase 1 needs.
@@ -424,8 +429,13 @@ llvmpipe, and Hyprland animations are visibly smooth. *This phase is allowed to 
 
 ## How to run this plan with agents
 
+- **Every agent must read `learned/phase-N.md` for all completed phases before starting.**
+  Those files record measured facts that contradict common documentation; an agent working
+  from upstream docs alone will repeat mistakes we already paid for.
+- At the end of a phase, the agent writes its own `learned/phase-N.md` in the same spirit:
+  what was measured, what contradicted the docs, what the next phase should not retry.
 - One phase = one agent session. Prompt shape: *"Implement Phase N of PLAN-v1.md in
-  this repo. Read the plan first. Decisions in the table are fixed. Verify the
+  this repo. Read the plan and every learned/phase-*.md first. Decisions in the table are fixed. Verify the
   acceptance criteria; anything you cannot verify yourself (needs the VM screen or my
   credentials), list as manual steps for me at the end. If a named package/option
   doesn't exist in current nixpkgs, find the current equivalent and note the
