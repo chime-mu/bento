@@ -14,7 +14,7 @@
     # names still evaluate but warn on every build.
     settings.user = {
       name = "Michael Arnoldus";
-      email = "ma@goodmonday.io";
+      email = "chime@mu.dk";
     };
   };
 }

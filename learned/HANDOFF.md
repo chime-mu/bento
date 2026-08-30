@@ -44,6 +44,24 @@ Avoid it: Phase 2's entire point is that you don't have to.
 **Everything Phase 0 put under `/etc` is untouched and still valid.** Phase 1 needed no
 sudo at all.
 
+**The committed config is one change ahead of the image — use it as your first test.**
+`home/chime/default.nix` now sets the git identity to `Michael Arnoldus <chime@mu.dk>`,
+but `artifacts/bento.qcow2` was built before that and still carries the old
+`ma@goodmonday.io`. Rebuilding the image for a one-line change would be exactly the waste
+Phase 2 exists to eliminate, so it was left for the in-VM loop to pick up. That makes a
+free, zero-risk first probe of the whole Phase 2 premise:
+
+```bash
+ssh -p 2222 chime@localhost 'git config --get user.email'   # → ma@goodmonday.io (stale)
+# ... get the repo into ~/bento, then nixos-rebuild switch --flake ~/bento#bento-vm ...
+ssh -p 2222 chime@localhost 'git config --get user.email'   # → chime@mu.dk
+```
+
+If that flips, the fast loop works. Note the account's SSH login key in
+`modules/core.nix` is deliberately a *different* identity (`ma@goodmonday.io`, the host's
+`~/.ssh/id_ed25519.pub`) — it is the only non-YubiKey key available, and an agent cannot
+touch a hardware key. Leave it unless you want to generate a dedicated bento key.
+
 ## The Phase 1 findings most likely to bite Phase 2
 
 Full detail in `learned/phase-1.md`; these three have direct Phase 2 consequences.
