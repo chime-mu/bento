@@ -34,15 +34,24 @@ in
         dpi-aware = "no";
       };
 
-      cursor = {
-        style = "beam";
-        # Two colours: the text under the cursor, then the cursor itself.
-        color = "${colors.hex.background} ${colors.hex.accent}";
-      };
+      cursor.style = "beam";
 
+      # **`[colors-dark]`, not `[colors]`.** foot grew a light/dark theme pair; the old
+      # section still works but prints `deprecated: foot: [colors]: use [colors-dark]
+      # instead` — once per key, so a 20-colour palette greets you with twenty lines of
+      # warning at the top of every terminal. There is no `colors-light` here on purpose:
+      # bento is a dark desktop, and an unused half-theme is a second thing to keep in
+      # step with `home/chime/theme`.
+      #
       # foot writes hex without a leading '#', which is why the theme keeps the bare form.
-      colors = {
+      colors-dark = {
         alpha = 1.0;
+
+        # The cursor's colours belong to the *palette*, not to `[cursor]` — that section
+        # is style only, and `[cursor] color = …` is rejected outright: "not a valid
+        # option: color", printed into the terminal it failed to configure. Two values:
+        # the text under the cursor, then the cursor itself.
+        cursor = "${colors.hex.background} ${colors.hex.accent}";
         background = colors.hex.background;
         foreground = colors.hex.foreground;
 
