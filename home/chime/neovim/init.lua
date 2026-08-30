@@ -90,14 +90,29 @@ pcall(vim.cmd.colorscheme, "tokyonight-night")
 
 setup("which-key", { preset = "helix" })
 
-setup("nvim-treesitter.configs", {
-  -- Grammars come from `nvim-treesitter.withAllGrammars` in ../neovim.nix, which is a
-  -- store path. There is nothing to install and nowhere writable to install it to, so
-  -- `auto_install` must stay off — left on it retries a download on every unknown
-  -- filetype and reports the failure as a treesitter error.
-  auto_install = false,
-  highlight = { enable = true },
-  indent = { enable = true },
+-- Treesitter highlighting.
+--
+-- **There is no `require("nvim-treesitter.configs").setup{ highlight = { enable = true } }`
+-- here**, which is what every guide, and nvim-treesitter's own pre-2025 README, tells you
+-- to write. nixpkgs ships the plugin's **`main`** branch, where that module does not
+-- exist at all: `lua/nvim-treesitter/` contains only init, config, install, parsers,
+-- indent and health, and `setup()` now configures where `:TSInstall` *downloads* to —
+-- which on a machine whose parsers are a read-only store path is not a question.
+--
+-- Highlighting moved to Neovim itself. `vim.treesitter.start()` is the whole feature, and
+-- `withAllGrammars` puts both halves it needs on the runtimepath:
+--
+--   .../pack/hm/start/nvim-treesitter-grammars/parser/nix.so
+--   .../pack/hm/start/nvim-treesitter-grammars/queries/nix/highlights.scm
+--
+-- `pcall`, because a filetype with no parser is normal, not an error — `start()` throws
+-- for those, and an uncaught throw inside a FileType autocmd is an error message on every
+-- single buffer of that type.
+vim.api.nvim_create_autocmd("FileType", {
+  group = vim.api.nvim_create_augroup("bento_treesitter", { clear = true }),
+  callback = function(ev)
+    pcall(vim.treesitter.start, ev.buf)
+  end,
 })
 
 setup("gitsigns")

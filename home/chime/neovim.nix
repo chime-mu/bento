@@ -65,10 +65,16 @@
       # home/chime/theme/colors.nix transcribes for waybar, walker, mako and the terminals.
       tokyonight-nvim
 
-      # `withAllGrammars` rather than a hand-picked list: the parsers are ~40 MiB of
-      # already-cached store paths, and the alternative is discovering a missing grammar
-      # the first time a file of that type is opened. Neovim 0.12 ships treesitter itself,
-      # but not the parsers.
+      # `withAllGrammars` rather than a hand-picked list: the parsers are already-cached
+      # store paths, and the alternative is discovering a missing grammar the first time a
+      # file of that type is opened. Neovim 0.12 ships treesitter itself, but not the
+      # parsers or the queries — `withAllGrammars` adds a second plugin next to this one
+      # (`nvim-treesitter-grammars`) carrying both, which is what puts `parser/nix.so` and
+      # `queries/nix/highlights.scm` on the runtimepath.
+      #
+      # nixpkgs tracks the plugin's **`main`** branch, not `master`. ./neovim/init.lua
+      # explains what that changes; the short version is that nothing here calls
+      # `nvim-treesitter`'s own setup at all.
       nvim-treesitter.withAllGrammars
 
       plenary-nvim # telescope's dependency, not used directly

@@ -177,6 +177,7 @@ bento rebuild                       # nixos-rebuild switch --flake ~/bento#bento
 | `bento rebuild [ACTION]` | Build and activate. `ACTION` defaults to `switch`; `boot`, `test`, `dry-activate`, `build` also work. Anything after `--` goes to `nixos-rebuild`. |
 | `bento update [INPUT...]` | Refresh `flake.lock`. Applies nothing — follow with `bento rebuild`. |
 | `bento gc [--older-than 30d \| --all]` | Delete old generations, sweep the store, rewrite the boot menu. |
+| `bento doctor` | What is running, which commit it came from, whether the flake has drifted from it, failed units, disk. Reads only — safe at any moment. |
 
 Rollback is the ordinary NixOS one: pick an older generation in the boot menu, or
 `nixos-rebuild switch --rollback`. Note that `bento gc --all` deletes the generations
@@ -230,6 +231,43 @@ Host bento
   LogLevel ERROR
 ```
 
+## Agent-driven OS
+
+This is the part that is not just a dotfiles repo with extra steps. `~/bento` inside the
+VM is a real git repository containing the definition of the machine you are logged into,
+and Claude Code is installed system-wide. So the loop is:
+
+```bash
+ssh -p 2222 chime@localhost
+cd ~/bento
+claude                      # then: "add ripgrep-all and bind it to Super+G"
+                            #       "the bar should show the date as well as the time"
+                            #       "why did the last rebuild fail?"
+bento rebuild               # the agent can run this itself
+```
+
+The agent edits `modules/*.nix` or `home/chime/*.nix`, runs `bento rebuild`, and the
+machine becomes the thing it just described. Nothing is installed imperatively; there is
+no state to reconcile afterwards, and `nixos-rebuild switch --rollback` undoes any of it.
+
+What makes that workable rather than alarming:
+
+| | |
+|---|---|
+| **`bento doctor`** | The cheapest possible context. What is running, which commit it was built from, whether the working tree has drifted from it, what has failed. Run it first. |
+| **Rollback is free** | Every rebuild is a new generation; the old one is still in the boot menu. `bento gc --all` is the only thing that removes that safety net, which is why the default is `--older-than 30d`. |
+| **The tree must be tracked** | A flake sees only what git tracks, and an untracked file that nothing imports yet is invisible *silently* (`learned/phase-2.md` §3). `bento rebuild` runs `git add -N` over untracked files first, and `bento doctor` reports them. |
+| **The VM is disposable** | It is a qcow2 on the host. Worst case, `./scripts/vm-sync.sh pull` and rebuild the image. |
+
+Claude Code needs to be logged in once, interactively, with your own credentials — an
+agent cannot do that for you. Run `claude` and follow the prompt; the token lands in
+`~/.claude` in the guest's home directory, which survives every `bento rebuild` and does
+**not** survive the clean loop.
+
+The tools the agent leans on — `ripgrep`, `fd`, `gh`, `jq`, `curl`, `nodejs-slim` — are in
+`modules/agent.nix` rather than in anyone's home profile, because they are part of what
+this machine *is*.
+
 ## Layout
 
 ```
@@ -240,13 +278,18 @@ bento/
 │   └── hardware.nix              # virtio, EFI/systemd-boot, serial console, disk layout
 ├── modules/
 │   ├── core.nix                  # users, ssh, nix settings, locale — host-agnostic
-│   ├── bento-cli.nix             # the `bento` command: rebuild / update / gc
+│   ├── bento-cli.nix             # the `bento` command: rebuild / update / gc / doctor
 │   ├── desktop.nix               # Hyprland, greetd autologin, the graphical session
-│   └── fonts.nix                 # CaskaydiaMono Nerd Font + fallbacks
+│   ├── fonts.nix                 # CaskaydiaMono Nerd Font + fallbacks
+│   └── agent.nix                 # claude-code and the tools it leans on
 ├── home/chime/
 │   ├── default.nix               # home-manager entry point
 │   ├── hyprland.nix              # keybindings, and what to switch off with no GPU
-│   ├── foot.nix                  # the terminal, themed
+│   ├── ghostty.nix               # the terminal
+│   ├── foot.nix                  # the fallback terminal, themed the same way
+│   ├── chromium.nix              # the browser, and the xdg-open default
+│   ├── neovim.nix                # the editor: LazyVim's plugin set, declaratively
+│   ├── neovim/init.lua           #   …and its configuration, as actual Lua
 │   ├── waybar.nix                # the bar
 │   ├── walker.nix                # the launcher + elephant
 │   ├── mako.nix                  # notifications
@@ -259,7 +302,8 @@ bento/
 │   ├── phase-1.md
 │   ├── phase-2.md
 │   ├── phase-3.md
-│   └── phase-4.md
+│   ├── phase-4.md
+│   └── phase-5.md
 └── scripts/
     ├── setup-linux-builder.sh    # one-time root setup of the aarch64-linux builder
     ├── start-linux-builder.sh    # start/check the builder VM (no sudo)
