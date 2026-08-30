@@ -17,13 +17,13 @@ v1 runs as a QEMU virtual machine on an Apple Silicon MacBook. Bare-metal comes 
 |---|---|
 | Guest architecture | `aarch64-linux` (Apple Silicon host, QEMU + hvf acceleration) |
 | Distro | NixOS unstable channel, flakes + home-manager |
-| Build path | Nix installed on macOS builds the qcow2 disk image (via a Linux remote builder); day-to-day iteration happens *inside* the VM with `nixos-rebuild switch` |
+| Build path | Nix installed on macOS builds the qcow2 disk image (via Determinate Nix's native Linux builder, or `darwin.linux-builder` as fallback); day-to-day iteration happens *inside* the VM with `nixos-rebuild switch` |
 | VM runner | Scripted QEMU (`scripts/run-vm.sh`), not UTM |
 | Desktop | Wayland + Hyprland, Waybar, Walker launcher, Mako notifications, hyprlock/hypridle — the Omarchy visual foundations |
 | Fonts / theme | CaskaydiaMono Nerd Font, Tokyo Night as the first theme (Omarchy's defaults) |
 | v1 software | Ghostty (terminal), Chromium (browser), Neovim (LazyVim-style), Claude Code, git + dev basics |
 | Names | OS/flake/hostname: `bento` · VM host: `bento-vm` · user: `chime` |
-| Graphics strategy | Boot with **software rendering first** (reliable in QEMU on macOS); VirGL/`gl=es` acceleration is a stretch goal (Phase 6) |
+| Graphics strategy | **Software rendering** — confirmed in Phase 0 as the *only* option: the host's QEMU 11.1.1 has no OpenGL/VirGL support compiled in. Acceleration requires replacing host QEMU (Phase 6, stretch) |
 
 Prior art: [try-omarchy](https://github.com/themartiano/try-omarchy) runs an ARM64 Arch
 guest with QEMU + Hypervisor.framework + VirGL. We borrow its QEMU approach; the guest
@@ -69,25 +69,64 @@ Each phase below is scoped to be handed to one implementation agent (Opus). Ever
 ends with **acceptance criteria** — the agent must verify them (or, where only a human
 at the screen can, print exact instructions for me to verify) before the phase is done.
 
-### Phase 0 — macOS host prerequisites
+### Phase 0 — macOS host prerequisites — ⚙️ IN PROGRESS (2026-08-30)
 
 *Mostly manual / interactive; the agent prepares commands and verifies results.*
 
-1. Install Nix on macOS (Determinate Systems installer recommended: multi-user, flakes
-   enabled by default).
-2. Set up an `aarch64-linux` builder so macOS can build Linux derivations. Two options,
-   prefer (a):
-   - a) `darwin.linux-builder` from nixpkgs (`nix run nixpkgs#darwin.linux-builder`),
-     registered in `/etc/nix/machines` per the
-     [nixpkgs manual](https://nixos.org/manual/nixpkgs/unstable/#sec-darwin-builder).
-   - b) If I later adopt nix-darwin: `nix.linux-builder.enable = true;`.
-3. Install QEMU on the host: `brew install qemu` (or `nix profile install nixpkgs#qemu`).
-   Verify `qemu-system-aarch64 --version` ≥ 9.x and locate the EDK2 firmware
-   (`edk2-aarch64-code.fd` in QEMU's share dir).
-4. `git init` this repo.
+**Host facts (measured, not assumed):**
+
+| Item | Value |
+|---|---|
+| Host | Apple Silicon (`arm64`), macOS 26.5.2 (build 25F84) |
+| Homebrew | 6.0.17 ✅ present |
+| QEMU | 11.1.1 ✅ installed via `brew install qemu` |
+| Accelerators | `hvf`, `tcg` ✅ — hvf available as planned |
+| EFI firmware | `/opt/homebrew/share/qemu/edk2-aarch64-code.fd` (64 MiB) |
+| Nix | ❌ not yet installed — **blocked on my sudo password** |
+| git repo | ✅ initialized, `main`, first commit `9dfd1fe` |
+
+**Note — there is no `edk2-aarch64-vars.fd`** shipped by Homebrew (only `edk2-arm-vars.fd`).
+Phase 1 must create a writable 64 MiB vars pflash itself, e.g.
+`dd if=/dev/zero of=artifacts/edk2-aarch64-vars.fd bs=1m count=64`, and pass it as the
+second `if=pflash` drive. Both pflash drives must be 64 MiB.
+
+**Step 1 — Install Nix (⚠️ requires me to run it; sudo needs a password):**
+
+```
+curl -fsSL https://install.determinate.systems/nix | sh -s -- install --determinate --no-confirm
+```
+
+Installer verified as v3.22.2, flags confirmed against `nix-installer install --help`.
+`--determinate` is chosen deliberately — see Step 2.
+
+**Step 2 — `aarch64-linux` builder. Try (a) first, fall back to (b):**
+
+- a) **Determinate Nix native Linux builder** (preferred): builds Linux derivations
+  through macOS's Virtualization.framework — no VM to manage, no `/etc/nix/machines`.
+  Introduced in Determinate Nix 3.8.4 as a gated preview; we are installing 3.22.2, so
+  it may now be on by default. **Check with `determinate-nixd version`** — look for
+  `The feature native-linux-builder is enabled`. If it is not enabled, it may need, in
+  `/etc/nix/nix.custom.conf`:
+  ```
+  extra-experimental-features = external-builders
+  external-builders = [{"systems":["aarch64-linux","x86_64-linux"],"program":"/usr/local/bin/determinate-nixd","args":["builder"]}]
+  ```
+  (Verify the current config path and syntax against
+  <https://docs.determinate.systems/determinate-nix/linux-builder/> — this moved from
+  `nix.conf` to `nix.custom.conf` under Determinate Nix.)
+- b) **`darwin.linux-builder`** from nixpkgs — the conventional fallback: a NixOS VM
+  registered in `/etc/nix/machines`, per the
+  [nixpkgs manual](https://nixos.org/manual/nixpkgs/unstable/#sec-darwin-builder).
+  Requires adding `chime` to `trusted-users`.
+
+**Step 3 — QEMU:** ✅ done.
+
+**Step 4 — `git init`:** ✅ done.
 
 **Acceptance:** `nix build nixpkgs#legacyPackages.aarch64-linux.hello` succeeds on the
-Mac; `qemu-system-aarch64 --version` prints.
+Mac (this is the real test of Step 2 — it must produce a Linux binary, not fail with
+"a 'aarch64-linux' with features {} is required to build"); `qemu-system-aarch64
+--version` prints ✅.
 
 ### Phase 1 — Flake skeleton + bootable headless image
 
@@ -216,12 +255,23 @@ credentials); Ghostty, Chromium, and Neovim all launch from the Walker launcher.
 Only after Phases 1–5 are stable. Software rendering will be the painful part of v1;
 this phase tries to fix it.
 
-1. Try host QEMU with VirGL: `-device virtio-gpu-gl-pci -display cocoa,gl=es`.
-   Homebrew's QEMU may or may not ship virgl/ANGLE support — check
-   `qemu-system-aarch64 -device help | grep gl` and the display backends; if absent,
-   try a virgl-enabled build (e.g. the approach in
-   [knazarov/homebrew-qemu-virgl](https://github.com/knazarov/homebrew-qemu-virgl) or a
-   nix-built QEMU with virglrenderer + ANGLE).
+> **Phase 0 finding — settled, do not re-test:** Homebrew QEMU 11.1.1 **cannot** do
+> VirGL. `-device help` offers only `virtio-gpu-pci` / `virtio-gpu-device` (no
+> `virtio-gpu-gl-pci`), `-display help` offers only `none/curses/cocoa/dbus`, and
+> `-display cocoa,gl=es` fails outright with *"OpenGL support was not enabled in this
+> build of QEMU"*. The binary links no virglrenderer/epoxy/ANGLE. **Phase 3 must
+> therefore plan for software rendering — it is not a choice, it is the only option
+> with the stock host QEMU.**
+
+1. Getting GL requires *replacing the host QEMU*, not reconfiguring it. Options, in
+   order of expected effort:
+   - a virgl-enabled Homebrew tap, e.g.
+     [knazarov/homebrew-qemu-virgl](https://github.com/knazarov/homebrew-qemu-virgl) or
+     [popey/homebrew-QEMU-VirGL](https://github.com/popey/homebrew-QEMU-VirGL);
+   - a nix-built QEMU with virglrenderer + ANGLE;
+   - study how [try-omarchy](https://github.com/themartiano/try-omarchy) builds its
+     QEMU — it solved exactly this problem for the same host and guest architecture.
+   Re-verify with `-device help | grep gl` before touching the guest.
 2. Guest side: mesa with virgl driver (default in NixOS), drop the software-rendering
    env vars for a test session.
 3. If it works: `run-vm.sh --gl` flag switches modes. If not: document findings, stay
@@ -248,8 +298,9 @@ llvmpipe, and Hyprland animations are visibly smooth. *This phase is allowed to 
 
 ## Known risks
 
-1. **Graphics on macOS-hosted QEMU** — the big one. Mitigated by software-rendering
-   first, VirGL as a separate failable phase.
+1. **Graphics on macOS-hosted QEMU** — the big one, and Phase 0 confirmed the bad case:
+   the host QEMU has no GL at all, so Hyprland *will* run on llvmpipe in v1 and will
+   feel slow. Accepted for v1; Phase 6 is the (failable) fix.
 2. **aarch64 binary cache gaps** (Chromium, Ghostty) — never build these from source in
    the VM; substitute and report instead.
 3. **Hyprland-in-VM env vars churn** — variable names for software rendering / cursors
