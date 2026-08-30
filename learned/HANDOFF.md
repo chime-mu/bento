@@ -58,10 +58,20 @@ at. Check before assuming: `pgrep -fl qemu-system-aarch64`. Do not restart it ju
 either way.
 
 **Host and VM are in sync**, both trees clean — confirm with `./scripts/vm-sync.sh status`
-rather than trusting this file. The guest has been rebuilt 32 times on top of the Phase 1
-image, and generation 32 was built from `122cc07`, which is `main`. **`bento doctor` (new
-in Phase 5) answers all of this in one screen** — run it first, over ssh; it reads only,
-and it says outright whether the running system is the commit you are reading.
+rather than trusting this file — a handoff that names a commit is stale the moment anyone
+commits, which is why this one does not. The guest has been rebuilt about thirty times on
+top of the Phase 1 image and was left in sync with `main`.
+
+**`bento doctor` (new in Phase 5) answers all of this in one screen**, and it is the right
+first command of the session:
+
+```bash
+ssh -p 2222 chime@localhost 'cd ~/bento && bento doctor'
+```
+
+It reads only — nothing it prints is computed or changed — and it says outright whether the
+running system is the commit you are about to read, which is the question every other
+answer depends on.
 
 **`artifacts/bento.qcow2` is the live disk and there is no snapshot behind it.**
 `build-image.sh` replaces it outright and `bento gc --all` deletes the generations you
