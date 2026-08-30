@@ -41,10 +41,13 @@ fi
 
 echo "==> Rewriting ${CUSTOM_CONF} (dropping external-builders, adding remote builder)"
 # Keep any pre-existing lines that are not ours and not the dead external-builders ones.
+# NOTE: POSIX ERE only — macOS ships BSD grep, where \s and \b are not portable.
 tmp=$(mktemp)
 if [[ -f ${CUSTOM_CONF} ]]; then
-  grep -v -E '^\s*(external-builders|extra-experimental-features\s*=\s*external-builders|extra-trusted-users|builders|builders-use-substitutes)\b' \
-    "${CUSTOM_CONF}" > "${tmp}" || true
+  grep -v -E '^[[:space:]]*(external-builders|extra-experimental-features|extra-trusted-users|builders|builders-use-substitutes)[[:space:]]*=' \
+    "${CUSTOM_CONF}" \
+    | grep -v -F '# --- bento: aarch64-linux remote builder (darwin.linux-builder) ---' \
+    > "${tmp}" || true
 fi
 
 cat >> "${tmp}" <<EOF
