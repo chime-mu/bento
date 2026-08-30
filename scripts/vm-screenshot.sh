@@ -61,7 +61,9 @@ case "${OUT}" in
   *) OUT="$(pwd)/${OUT}" ;;
 esac
 
-python3 - "${QMP_SOCK}" "${OUT}" "${DELAY}" "${INPUT[@]}" <<'PY'
+# `${INPUT[@]+...}` because macOS ships bash 3.2, where an empty array expanded under
+# `set -u` is an "unbound variable" — a plain capture with no --key/--type would die here.
+python3 - "${QMP_SOCK}" "${OUT}" "${DELAY}" ${INPUT[@]+"${INPUT[@]}"} <<'PY'
 import json, socket, sys, time
 
 sock_path, out_path, delay = sys.argv[1], sys.argv[2], float(sys.argv[3])
