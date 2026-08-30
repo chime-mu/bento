@@ -69,7 +69,14 @@ Each phase below is scoped to be handed to one implementation agent (Opus). Ever
 ends with **acceptance criteria** — the agent must verify them (or, where only a human
 at the screen can, print exact instructions for me to verify) before the phase is done.
 
-### Phase 0 — macOS host prerequisites — ⚙️ IN PROGRESS (2026-08-30)
+### Phase 0 — macOS host prerequisites — ✅ **COMPLETE (2026-08-30)**
+
+**Acceptance test passed.** A forced, unsubstitutable `aarch64-linux` derivation built
+on `ssh-ng://builder@linux-builder` and returned `aarch64 / Linux`. The Mac can now
+build Linux packages, which is everything Phase 1 needs.
+
+Day-to-day: run `./scripts/start-linux-builder.sh` (no sudo) before any macOS-side Linux
+build; `./scripts/start-linux-builder.sh --check` reports whether it's up.
 
 *Mostly manual / interactive; the agent prepares commands and verifies results.*
 
@@ -83,8 +90,9 @@ at the screen can, print exact instructions for me to verify) before the phase i
 | Accelerators | `hvf`, `tcg` ✅ — hvf available as planned |
 | EFI firmware | `/opt/homebrew/share/qemu/edk2-aarch64-code.fd` (64 MiB) |
 | Nix | ✅ **Determinate Nix 3.22.2** (Nix 2.35.2), installed via `nix-installer --determinate` |
-| Linux builder | ❌ **NOT working** — `platform mismatch: Required system 'aarch64-linux', Current system 'aarch64-darwin'` |
-| git repo | ✅ initialized, `main`, first commit `9dfd1fe` |
+| Linux builder | ✅ **`darwin.linux-builder`** on `localhost:31022`, verified building real `aarch64-linux` output |
+| git repo | ✅ initialized, `main` |
+| `nixos-generators` | ✅ 1.8.0 in nixpkgs; **`qcow-efi` format confirmed to exist** (Phase 1 depends on it) |
 
 **⚠️ Acceptance-criterion correction.** The original criterion —
 `nix build nixpkgs#legacyPackages.aarch64-linux.hello` — is **worthless as a test**: it
