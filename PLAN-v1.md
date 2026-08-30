@@ -189,12 +189,18 @@ Goal: log in and land in Hyprland inside the QEMU window.
    - `programs.hyprland.enable = true;`
    - `greetd` with autologin for `chime` into Hyprland (dev VM — no password wall),
    - pipewire, xdg-desktop-portal-hyprland, polkit.
-2. Software-rendering environment for the VM (Hyprland has no real GPU under
-   virtio-gpu on macOS): set the environment variables Hyprland/aquamarine need to run
-   with llvmpipe/software rendering and no hardware cursors (verify current variable
-   names against Hyprland ≥ current-release docs — they have changed across versions;
-   e.g. historically `WLR_NO_HARDWARE_CURSORS=1`, `LIBGL_ALWAYS_SOFTWARE=1`). Gate
-   these behind the `bento-vm` host so a future bare-metal host doesn't inherit them.
+2. Software-rendering environment for the VM. **Use try-omarchy's verified set** (see
+   Phase 6 for provenance) via `environment.sessionVariables`, gated behind the
+   `bento-vm` host so a future bare-metal host doesn't inherit it:
+   - `WLR_RENDERER_ALLOW_SOFTWARE = "1"` ← the current, correct variable (the older
+     `WLR_NO_HARDWARE_CURSORS` guess is superseded),
+   - `LIBGL_ALWAYS_SOFTWARE = "1"` (llvmpipe — we need this where try-omarchy doesn't,
+     since we have no VirGL),
+   - `OZONE_PLATFORM = "wayland"`, `ELECTRON_OZONE_PLATFORM_HINT = "wayland"`,
+     `MOZ_ENABLE_WAYLAND = "1"`, `QT_QPA_PLATFORM = "wayland"` — needed by Chromium
+     (Phase 5) and friends.
+   Guest GPU packages: `mesa` plus `vulkan-swrast` (lavapipe) is sufficient — there is
+   no separate virgl package, the driver lives inside mesa.
 3. Minimal `home/chime/hyprland.nix`: Super-based keybindings following Omarchy's
    scheme (Super+Return terminal, Super+Space launcher, Super+W close, Super+1..9
    workspaces), foot or ghostty as terminal once Phase 4 lands (use foot as temporary
@@ -263,15 +269,55 @@ this phase tries to fix it.
 > therefore plan for software rendering — it is not a choice, it is the only option
 > with the stock host QEMU.**
 
-1. Getting GL requires *replacing the host QEMU*, not reconfiguring it. Options, in
-   order of expected effort:
-   - a virgl-enabled Homebrew tap, e.g.
-     [knazarov/homebrew-qemu-virgl](https://github.com/knazarov/homebrew-qemu-virgl) or
-     [popey/homebrew-QEMU-VirGL](https://github.com/popey/homebrew-QEMU-VirGL);
-   - a nix-built QEMU with virglrenderer + ANGLE;
-   - study how [try-omarchy](https://github.com/themartiano/try-omarchy) builds its
-     QEMU — it solved exactly this problem for the same host and guest architecture.
-   Re-verify with `-device help | grep gl` before touching the guest.
+Getting GL requires *replacing the host QEMU*, not reconfiguring it.
+
+**What try-omarchy actually does (read from their source, 2026-08-30) — this is the
+reference implementation for exactly our host + guest architecture:**
+
+*Host side* — they build QEMU **10.2.50 from source** (`macos/build-qemu-gpu-runtime.sh`)
+rather than using any stock binary:
+- source/tap: `startergo/homebrew-qemu-virgl-kosmickrisp`, plus two of their own patches
+  (`qemu-cocoa-dynamic-display.patch` — "publish the live backing display through
+  virtio-gpu", which is what gives them live window resize and HiDPI; and
+  `qemu-cocoa-product-identity.patch`);
+- pinned deps: **virglrenderer 1.0.33** and **ANGLE 1.0.15** (ANGLE is the OpenGL-ES→Metal
+  translator — the piece that makes GL possible at all now that macOS has dropped
+  OpenGL), plus epoxy;
+- configure: `--target-list=aarch64-softmmu --without-default-features --enable-system
+  --enable-hvf --disable-tcg --enable-cocoa --enable-opengl --enable-virglrenderer
+  --enable-pixman --enable-slirp --enable-sdl --enable-virtfs`;
+- the built binary is **code-signed with `com.apple.security.hypervisor`** — they verify
+  this at launch. (✅ Our Homebrew QEMU already has this entitlement, so hvf is fine for
+  Phase 1; a self-built QEMU would need re-signing.)
+
+*Runtime flags:*
+```
+-device virtio-gpu-gl-pci,max_outputs=1,xres=1920,yres=1080
+-display cocoa,gl=es,show-cursor=on,zoom-to-fit=on,full-screen=on,swap-opt-cmd=off
+```
+They **hard-fail** if `virtio-gpu-gl-pci` is absent — there is no software fallback in
+their design. Ours is the reverse: software is the v1 baseline and GL is the upgrade.
+
+*Guest side (directly portable to our NixOS config):*
+- `/usr/lib/environment.d/90-try-omarchy.conf` sets `WLR_RENDERER_ALLOW_SOFTWARE=1`
+  (note: **`WLR_RENDERER_ALLOW_SOFTWARE`, not `WLR_NO_HARDWARE_CURSORS`** — this
+  supersedes the older name guessed in Phase 3 below), plus `OZONE_PLATFORM=wayland`,
+  `ELECTRON_OZONE_PLATFORM_HINT=wayland`, `MOZ_ENABLE_WAYLAND=1`,
+  `QT_QPA_PLATFORM=wayland`. Notably they set the software-renderer flag *even with*
+  VirGL working — cheap insurance;
+- guest packages are just `mesa` + `vulkan-swrast` (no special virgl package — the
+  virgl Gallium driver ships inside mesa);
+- they pass a kernel arg `omarchy.qemu_virgl=1` and key guest behaviour off it: hide the
+  guest cursor (`cursor { invisible = true }`, because Cocoa draws the host cursor
+  outside the guest scanout for zero-lag motion) and run a display-sync helper. They
+  deliberately let **virtio-gpu EDID** carry the live window size and host refresh rate
+  instead of hardcoding a monitor mode — that is the mechanism behind their
+  "automatic guest resolution and HiDPI scale updates".
+
+**Our fallback options if we don't want to build QEMU ourselves:**
+[knazarov/homebrew-qemu-virgl](https://github.com/knazarov/homebrew-qemu-virgl) or
+[popey/homebrew-QEMU-VirGL](https://github.com/popey/homebrew-QEMU-VirGL).
+Re-verify with `-device help | grep gl` before touching the guest.
 2. Guest side: mesa with virgl driver (default in NixOS), drop the software-rendering
    env vars for a test session.
 3. If it works: `run-vm.sh --gl` flag switches modes. If not: document findings, stay
