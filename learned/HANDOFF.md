@@ -55,9 +55,12 @@ The linux-builder is **not** running and Phase 4 does not need it.
 | bento VM | `./scripts/run-vm.sh` (windowed) or `--headless` | **yes** — already up |
 | `linux-builder` VM | `./scripts/start-linux-builder.sh` | no — only to rebuild the *image* |
 
-**Host and VM are in sync at `50203ee`**, both trees clean, and the running system is
-stamped with that revision (`nixos-version --configuration-revision`). The guest is at
-generation 15, rebuilt fifteen times on top of the Phase 1 image.
+**Host and VM are in sync**, both trees clean — confirm with `./scripts/vm-sync.sh status`
+rather than trusting this file. The guest is at generation 15, rebuilt fifteen times on top
+of the Phase 1 image, and `nixos-version --configuration-revision` reports the commit it was
+built from. That stamp trails HEAD by any docs-only commits made after the last rebuild,
+which is correct and not worth a rebuild to fix — it records what the *system* was built
+from, not what the repo says now.
 
 **`artifacts/bento.qcow2` is the live disk and there is no snapshot behind it.**
 `build-image.sh` replaces it outright and `bento gc --all` deletes the generations you could
