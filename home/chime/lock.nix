@@ -8,8 +8,15 @@
 # `security.pam.services.hyprlock` lives in modules/desktop.nix. Without it hyprlock falls
 # back to shelling out to `su`, which on this machine means a lock screen that will not
 # accept the correct password. Nothing warns you; you find out while locked out.
-{ lib, pkgs, ... }:
+{
+  lib,
+  osConfig,
+  pkgs,
+  ...
+}:
 let
+  softwareRendering = osConfig.bento.desktop.softwareRendering;
+
   theme = import ./theme;
   inherit (theme) colors font;
 
@@ -24,9 +31,16 @@ in
         hide_cursor = true;
         # Refuse an empty submit rather than counting it as a failed attempt.
         ignore_empty_input = true;
-        # No grace period: the point of a lock is that it locked.
-        grace = 0;
+        # `grace` used to live here and is gone in 0.9.6 — `config option <general:grace>
+        # does not exist`, printed once to stderr and then "Proceeding ignoring faulty
+        # entries", which is easy to miss inside hypridle's journal. The full set is
+        # text_trim, hide_cursor, ignore_empty_input, immediate_render, fractional_scaling,
+        # screencopy_mode and fail_timeout; anything else a guide names is stale.
       };
+
+      # Same reasoning as home/chime/hyprland.nix: no GPU, so no animation. hyprlock
+      # defaults this on and it is a separate setting from the compositor's.
+      animations.enabled = !softwareRendering;
 
       background = [
         {
@@ -73,6 +87,15 @@ in
 
           outline_thickness = 1;
           rounding = 10;
+
+          # hyprlock fades the field out two seconds after the input goes empty
+          # (`fade_on_empty` defaults to 1). It looks good on a laptop and it is actively
+          # misleading here: a screenshot of this machine taken more than two seconds after
+          # it locked shows a wallpaper and a clock and *no password box*, which reads as
+          # "the input field failed to render" — that was the first conclusion drawn from
+          # exactly that screenshot. On a machine whose screen is inspected by an agent,
+          # the field stays put.
+          fade_on_empty = false;
           dots_size = 0.26;
           dots_spacing = 0.3;
           dots_center = true;
