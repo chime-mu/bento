@@ -1,85 +1,86 @@
-# Handoff — starting Phase 1 in a fresh session
+# Handoff — starting Phase 2 in a fresh session
 
-Written 2026-08-30, at the end of the Phase 0 session.
+Written 2026-08-30, at the end of the Phase 1 session.
 
 ## Paste this into the new session
 
-> Implement **Phase 1** of `PLAN-v1.md` in this repo (`/Users/chime/Workspace/Bento`).
+> Implement **Phase 2** of `PLAN-v1.md` in this repo (`/Users/chime/Workspace/Bento`).
 >
-> Read `PLAN-v1.md` and `learned/phase-0.md` in full before doing anything — phase-0
-> records measured facts that contradict upstream documentation, and you will waste time
-> or break things if you work from the official docs instead.
+> Read `PLAN-v1.md`, `learned/phase-0.md` and `learned/phase-1.md` in full before doing
+> anything — the learned files record measured facts that contradict upstream
+> documentation, and you will waste time or break things working from the official docs.
 >
 > The decisions table in the plan is fixed; do not re-litigate it. If a named package or
 > option doesn't exist in current nixpkgs, find the current equivalent and note the
-> substitution in your report and in `learned/phase-1.md`.
+> substitution in your report and in `learned/phase-2.md`.
 >
-> Start by running `./scripts/start-linux-builder.sh` — the builder VM does not survive
-> across sessions and Phase 1 cannot build the image without it.
+> Phase 2 runs *inside* the VM, so start with:
+>   ./scripts/run-vm.sh --headless    # then: ssh -p 2222 chime@localhost
+> The image already exists at artifacts/bento.qcow2. You only need the linux builder
+> (./scripts/start-linux-builder.sh) if you have to rebuild the image itself — Phase 2
+> should not need to.
 >
 > Verify the acceptance criteria yourself. Anything you cannot verify (needs the VM's
 > screen, or my credentials) — list it for me as explicit manual steps at the end.
-> Finish by writing `learned/phase-1.md` and committing.
+> Finish by writing `learned/phase-2.md` and committing.
 
 ## State to be aware of
 
-**The `darwin.linux-builder` VM is NOT running.** It ran as a background process in the
-Phase 0 session and was shut down at the end. It must be restarted:
+**Nothing is running.** Both VMs were shut down at the end of the Phase 1 session:
 
-```bash
-./scripts/start-linux-builder.sh
-```
+| What | How to start | Needed for Phase 2? |
+|---|---|---|
+| bento VM | `./scripts/run-vm.sh --headless` | **yes** — Phase 2 happens inside it |
+| `linux-builder` VM | `./scripts/start-linux-builder.sh` | only to rebuild the *image* |
 
-No sudo is needed — Phase 0 installed a stable keypair specifically so an agent can start
-it unattended. Its disk image lives at `~/.local/state/bento/builder-disk.qcow2` (20 GB)
-and its keys at `~/.local/state/bento/builder-keys/`. Both are outside the repo and
-persist. If the image is ever corrupted, delete it and it will be recreated on next start.
+**`artifacts/bento.qcow2` already exists** (2.7 GiB in a 60 G qcow2) and is gitignored, so
+it survives across sessions. `artifacts/edk2-aarch64-vars.fd` — the fabricated EFI
+variable store — persists too, and holds the boot entry written on first boot.
+`./scripts/run-vm.sh --reset-vars` throws it away if it ever gets confused.
 
-**Everything else Phase 0 set up is persistent** and survives reboots:
+Rebuilding the image from scratch takes roughly **25 minutes** and needs the builder up.
+Avoid it: Phase 2's entire point is that you don't have to.
 
-- `/etc/nix/nix.custom.conf` — `builders`, `builders-use-substitutes`, `extra-trusted-users`
-- `/etc/ssh/ssh_config.d/100-linux-builder.conf` — `linux-builder` host on port 31022
-- `/etc/nix/builder_ed25519{,.pub}` — builder credentials
-- Nix and QEMU installations
+**Everything Phase 0 put under `/etc` is untouched and still valid.** Phase 1 needed no
+sudo at all.
 
-## The five Phase 0 findings most likely to bite Phase 1
+## The Phase 1 findings most likely to bite Phase 2
 
-Full detail in `learned/phase-0.md`; these are the ones with direct Phase 1 consequences.
+Full detail in `learned/phase-1.md`; these three have direct Phase 2 consequences.
 
-1. **There is no `edk2-aarch64-vars.fd` on this machine.** Homebrew ships only
-   `edk2-aarch64-code.fd`. Phase 1's `run-vm.sh` must create its own writable 64 MiB vars
-   pflash (`dd if=/dev/zero of=... bs=1m count=64`). Both pflash drives must be 64 MiB.
-   Firmware lives at `/opt/homebrew/share/qemu/edk2-aarch64-code.fd`.
+1. **`hosts/bento-vm/hardware.nix` duplicates the disk layout on purpose, and Phase 2 is
+   exactly what would break if it were "cleaned up".** The image module sets
+   `fileSystems` only while building the image; `nixos-rebuild switch --flake
+   ~/bento#bento-vm` evaluates the config *without* it. Delete those `mkDefault`s and the
+   in-VM rebuild fails with *"The ‘fileSystems’ option does not specify your root file
+   system"* — while the image still builds fine, so the mistake looks harmless until the
+   first rebuild. (Verified: the standalone evaluation resolves `/` →
+   `/dev/disk/by-label/nixos`, ext4, autoResize, and systemd-boot enabled.)
 
-2. **Never use a cached package as a build-capability test.**
-   `nix build nixpkgs#legacyPackages.aarch64-linux.hello` passes with no builder at all —
-   it substitutes. Use the unsubstitutable `runCommand` probe in the README.
+2. **The VM has `nixpkgs` pinned into its own store.** `flake.nix` sets
+   `nix.registry.nixpkgs.flake` and `nix.nixPath` to the exact locked revision, so inside
+   the VM `nix shell nixpkgs#…` and `<nixpkgs>` resolve to the same tree the image was
+   built from, without a channel. The flake's *other* input (home-manager) is not pinned
+   that way, so the first in-VM `nixos-rebuild` will want to fetch it — the VM needs
+   working network for that. NAT via `-nic user` is already configured.
 
-3. **The Nix daemon label is `systems.determinate.nix-daemon`,** not
-   `org.nixos.nix-daemon`. Documentation using the latter silently does nothing here.
-   User Nix settings go in `/etc/nix/nix.custom.conf`, never `nix.conf` (it gets
-   overwritten on upgrade).
+3. **`chime` is a trusted Nix user in the guest** (`trusted-users = [ "root" "@wheel" ]`)
+   and has passwordless sudo, so an agent inside the VM can rebuild the OS unattended.
+   That is the Phase 2 loop working as designed, not an oversight.
 
-4. **The host QEMU has no OpenGL.** `virtio-gpu-gl-pci` does not exist in this build and
-   `-display cocoa,gl=es` errors out. Phase 1 must use plain `-device virtio-gpu-pci` and
-   `-display cocoa`. Do not spend time trying to enable GL — that is Phase 6 and requires
-   replacing the QEMU binary entirely.
+## Confirmed available for Phase 2
 
-5. **macOS shell traps:** there is no `timeout(1)`; BSD `grep` does not support `\s` or
-   `\b` (use `[[:space:]]`); `sudo` timestamps are per-TTY so an agent cannot reuse a
-   human's cached sudo — batch all root work into one script for the human to run.
+- Guest is NixOS `26.11.20260828.83199d0`, Nix 2.34.8, `aarch64`, kernel 6.18.47.
+- `git` is in the guest (both system-wide and via home-manager), so cloning the repo into
+  `~/bento` works. The host repo is at `/Users/chime/Workspace/Bento`; `scp -P 2222` is
+  the plan's suggested first transport.
+- Root filesystem is 59 G with 54 G free — plenty of room for generations.
 
-## Confirmed available for Phase 1
+## Open question Phase 2 should settle
 
-- `nixos-generators` 1.8.0, and the **`qcow-efi`** format exists — the plan is valid as
-  written.
-- `nixpkgs` resolves via Determinate's FlakeHub `nixpkgs-weekly`, not the NixOS channel.
-  Phase 1's flake should pin `nixpkgs` explicitly in its own inputs rather than relying on
-  the ambient `extra-nix-path`.
-
-## Open question Phase 1 should settle
-
-The plan says to build the image with `nixos-generators`' `qcow-efi` format. An
-alternative worth a moment's thought once the flake exists: NixOS can also produce a
-bootable image via `nixos-rebuild build-image` / the `image` modules in recent nixpkgs.
-Use whichever evaluates cleanly; note the choice in `learned/phase-1.md`.
+The plan says to copy the repo into the VM with `scp -P 2222`, then later switch to a git
+remote. Worth deciding early *which direction is authoritative*: if edits happen inside
+the VM, the host repo (the one under git, with the flake.lock that built the image) needs
+a way to receive them. A shared 9p/virtfs mount of the host repo is a third option QEMU
+supports and would avoid two diverging copies entirely — consider it before committing to
+`scp`, and record the choice in `learned/phase-2.md`.

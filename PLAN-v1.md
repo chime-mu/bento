@@ -226,7 +226,30 @@ Installer verified as v3.22.2, flags confirmed against `nix-installer install --
 Mac (⬅ *this*, not the `hello` test, which is meaningless — see the correction above);
 `qemu-system-aarch64 --version` prints ✅.
 
-### Phase 1 — Flake skeleton + bootable headless image
+### Phase 1 — Flake skeleton + bootable headless image — ✅ **COMPLETE (2026-08-30)**
+
+> 📓 **Full findings log: [`learned/phase-1.md`](learned/phase-1.md)** — read it before
+> Phase 2. It covers why the image is built with nixpkgs' own `image.modules` instead of
+> `nixos-generators`, why `hardware.nix` must keep duplicating the disk layout (Phase 2
+> breaks if it doesn't), the KVM scheduling gate on the image build, and a nixpkgs bug
+> that stops *any* NixOS VM from starting on this Mac.
+
+**Acceptance passed.** The VM boots to `bento login:` on the serial console,
+`ssh -p 2222 chime@localhost` works on a key, `nixos-version` reports
+`26.11.20260828.83199d0 (Zokor)`, and `nix flake check --all-systems` exits 0.
+
+**Three substitutions from the steps below, all deliberate — see the findings log:**
+
+1. **`nixos-generators` was dropped.** It now warns that it is deprecated and upstreamed
+   into nixpkgs, so `packages.aarch64-linux.bento-image` is
+   `nixosConfigurations.bento-vm.config.system.build.images.qemu-efi`. This also resolves
+   a contradiction between step 1 (`qcow-efi`, which hardcodes GRUB) and step 3
+   (systemd-boot): the nixpkgs module uses systemd-boot, satisfying both.
+2. **The image build's `kvm` requirement is overridden away.** `make-disk-image` runs a
+   nested VM, the builder has no `/dev/kvm`, and the inner QEMU falls back to TCG anyway.
+3. **`start-linux-builder.sh` now runs a flake-local builder** with 8 cores / 12 GiB
+   instead of the stock 1 core / 3 GiB, and exports a `QEMU_OPTS` GIC fix without which
+   the builder does not start at all on this host.
 
 Goal: a minimal NixOS aarch64 qcow2 image that boots in QEMU with serial console + SSH.
 No desktop yet — this isolates virtualization problems from desktop problems.
