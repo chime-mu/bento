@@ -21,7 +21,7 @@ v1 runs as a QEMU virtual machine on an Apple Silicon MacBook. Bare metal comes 
 |---|---|
 | 0 — macOS host prerequisites | ✅ **complete** |
 | 1 — Flake skeleton + bootable headless image | ✅ **complete** |
-| 2 — Iteration loop from inside the VM | ⬜ |
+| 2 — Iteration loop from inside the VM | ✅ **complete** |
 | 3 — Wayland + Hyprland (software rendering) | ⬜ |
 | 4 — Omarchy visual foundations | ⬜ |
 | 5 — My software + the agent | ⬜ |
@@ -34,6 +34,7 @@ v1 runs as a QEMU virtual machine on an Apple Silicon MacBook. Bare metal comes 
 | **[`PLAN-v1.md`](PLAN-v1.md)** | The plan. Fixed decisions, phase-by-phase steps, acceptance criteria, known risks. |
 | **[`learned/phase-0.md`](learned/phase-0.md)** | Measured findings from Phase 0. **Several contradict upstream documentation** — read before touching QEMU or Nix config. |
 | **[`learned/phase-1.md`](learned/phase-1.md)** | Measured findings from Phase 1 — why the image is built with nixpkgs' own `image.modules` and not `nixos-generators`, and what the guest needs to boot on this host. |
+| **[`learned/phase-2.md`](learned/phase-2.md)** | Measured findings from Phase 2 — the two loops, why the host and the VM are two git repos rather than one 9p share, and which files a rebuild can and cannot see. |
 
 ## Host setup
 
@@ -86,6 +87,85 @@ stage of it — laying out the partitions and installing systemd-boot — runs a
 nested Linux VM that has no KVM to accelerate it. Everything after Phase 2 happens inside
 the bento VM instead, where no builder is involved at all.
 
+## The two loops
+
+Changing bento does **not** mean rebuilding the disk image. The image is a seed; the
+machine rewrites itself from the flake after that.
+
+### Fast loop — daily, seconds
+
+Edit the config inside the VM and apply it in place. Measured on this host: **6 s** to add
+a cached package, **1 s** for a no-op reapply.
+
+```bash
+./scripts/run-vm.sh --headless      # if it isn't already up
+ssh -p 2222 chime@localhost
+
+cd ~/bento
+$EDITOR modules/core.nix            # or ask the agent to
+bento rebuild                       # nixos-rebuild switch --flake ~/bento#bento-vm
+```
+
+`bento` is part of the OS (`modules/bento-cli.nix`), not a shell alias:
+
+| Command | What it does |
+|---|---|
+| `bento rebuild [ACTION]` | Build and activate. `ACTION` defaults to `switch`; `boot`, `test`, `dry-activate`, `build` also work. Anything after `--` goes to `nixos-rebuild`. |
+| `bento update [INPUT...]` | Refresh `flake.lock`. Applies nothing — follow with `bento rebuild`. |
+| `bento gc [--older-than 30d \| --all]` | Delete old generations, sweep the store, rewrite the boot menu. |
+
+Rollback is the ordinary NixOS one: pick an older generation in the boot menu, or
+`nixos-rebuild switch --rollback`. Note that `bento gc --all` deletes the generations
+that make that possible — prefer `--older-than`.
+
+### Clean loop — occasional, ~25 minutes
+
+Rebuild the image on macOS and boot a fresh VM. Needed when the change is one the fast
+loop cannot make (bootloader, partitioning) or when the guest has drifted somewhere you'd
+rather not reason about.
+
+```bash
+./scripts/start-linux-builder.sh
+./scripts/build-image.sh            # replaces artifacts/bento.qcow2 — the old guest is gone
+./scripts/run-vm.sh --headless
+./scripts/vm-sync.sh init           # re-seed ~/bento in the new guest
+```
+
+**The clean loop destroys the guest's state**, including its copy of the repo. Get your
+commits out first (`./scripts/vm-sync.sh pull`).
+
+### Moving commits between here and the VM
+
+The host repo and the VM's `~/bento` are two real git repositories, and both directions
+are driven from the host. Not because the other direction is impossible — the guest can
+reach the Mac at `10.0.2.2` — but because that route depends on macOS Remote Login being
+enabled and on the guest holding a credential for the host account. The 2222 forward
+needs neither.
+
+```bash
+./scripts/vm-sync.sh init      # seed ~/bento in the VM, add the `vm` remote here
+./scripts/vm-sync.sh push      # this repo  ->  the VM's working tree
+./scripts/vm-sync.sh pull      # the VM     ->  this repo  (fast-forward only)
+./scripts/vm-sync.sh status    # who is ahead of whom
+```
+
+`push` lands in the VM's checked-out tree via `receive.denyCurrentBranch=updateInstead`,
+and is refused outright if that tree is dirty. `pull` refuses to merge a divergence.
+Nothing is overwritten silently in either direction.
+
+Handy, since the VM's host key changes every time the image is rebuilt:
+
+```
+# ~/.ssh/config
+Host bento
+  HostName localhost
+  Port 2222
+  User chime
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  LogLevel ERROR
+```
+
 ## Layout
 
 ```
@@ -95,17 +175,20 @@ bento/
 │   ├── default.nix               # which modules make up this machine
 │   └── hardware.nix              # virtio, EFI/systemd-boot, serial console, disk layout
 ├── modules/
-│   └── core.nix                  # users, ssh, nix settings, locale — host-agnostic
+│   ├── core.nix                  # users, ssh, nix settings, locale — host-agnostic
+│   └── bento-cli.nix             # the `bento` command: rebuild / update / gc
 ├── home/chime/                   # home-manager entry point (near-empty until Phase 3)
 ├── PLAN-v1.md                    # the plan
 ├── learned/                      # findings log, one file per completed phase
 │   ├── phase-0.md
-│   └── phase-1.md
+│   ├── phase-1.md
+│   └── phase-2.md
 └── scripts/
     ├── setup-linux-builder.sh    # one-time root setup of the aarch64-linux builder
     ├── start-linux-builder.sh    # start/check the builder VM (no sudo)
     ├── build-image.sh            # build the qcow2 and stage artifacts/bento.qcow2
-    └── run-vm.sh                 # boot it in QEMU
+    ├── run-vm.sh                 # boot it in QEMU
+    └── vm-sync.sh                # move commits between this repo and the VM's ~/bento
 ```
 
 ## Working on this with agents

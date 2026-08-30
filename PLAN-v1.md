@@ -286,7 +286,33 @@ No desktop yet — this isolates virtualization problems from desktop problems.
 `nixos-version` inside prints an unstable version; the flake evaluates with
 `nix flake check`.
 
-### Phase 2 — Iteration loop from inside the VM
+### Phase 2 — Iteration loop from inside the VM — ✅ **COMPLETE (2026-08-30)**
+
+> 📓 **Full findings log: [`learned/phase-2.md`](learned/phase-2.md)** — read it before
+> Phase 3. It covers what a rebuild can and cannot see in a dirty git tree, why the host
+> and the VM are two git repositories rather than one 9p share (9p *is* available on this
+> host — it was measured, then rejected), and why `nixos-rebuild --sudo` replaces
+> `sudo nixos-rebuild`.
+
+**Acceptance passed.** Adding `tree` to `modules/core.nix` *inside* the VM and running
+`bento rebuild` put it on `PATH` in **6.4 s** with no re-imaging; reverting the edit and
+rebuilding removed it again. A no-op reapply is **1.3 s**. Compare ~25 minutes to rebuild
+the image.
+
+**Three substitutions from the steps below, all deliberate — see the findings log:**
+
+1. **`scp` was dropped in favour of two git repositories.** Step 1's "later git remote"
+   is done now rather than later: `scripts/vm-sync.sh` seeds the VM from a `git bundle`
+   and moves commits both ways over the 2222 forward. `scp`/`tar` of a working tree is
+   actively bad on macOS — bsdtar writes AppleDouble `._*` companions for every file
+   carrying an extended attribute, and 24 of them landed in the guest on the first try.
+2. **`bento` is a NixOS module, not a shell alias.** `modules/bento-cli.nix` builds it
+   with `writeShellApplication`, so the OS that the command rebuilds also *ships* the
+   command, and shellcheck runs over it at build time. (A file not in the target layout
+   above; `bento doctor` stays in Phase 5's `agent.nix` as planned.)
+3. **`nixos-rebuild switch --sudo`, not `sudo nixos-rebuild switch`.** The guest runs
+   nixos-rebuild-ng, which has `--elevate {none,sudo,run0}`. Evaluation and build stay as
+   `chime`; only activation is elevated.
 
 Goal: the agent-friendly workflow — change the OS without rebuilding the image.
 

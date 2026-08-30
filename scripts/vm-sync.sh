@@ -21,12 +21,16 @@
 #
 #   So: two real git repositories, and history is the thing that moves between them.
 #
-# Both directions are initiated *from the host*, because only that direction works.
-# `-nic user` gives the guest NAT, and macOS runs no ssh server by default, so the guest
-# cannot reach this repo — but the host reaches the guest on the 2222 forward. `push`
-# therefore relies on `receive.denyCurrentBranch=updateInstead` in the guest repo, which
-# `init` sets: a push updates the checked-out working tree, and is refused outright if
-# that tree is dirty. Nothing is ever silently overwritten in either direction.
+# Both directions are initiated *from the host*, by choice rather than by necessity.
+# The guest can in fact reach the Mac: slirp maps the host to 10.0.2.2, and an ssh from
+# the guest reached this machine's sshd (OpenSSH_10.2) and got as far as authentication.
+# But that only worked because Remote Login happens to be enabled here — a macOS setting
+# this repo has no business depending on — and using it would mean handing the guest a
+# credential for the host account. The 2222 forward needs neither, so the host drives.
+#
+# `push` therefore relies on `receive.denyCurrentBranch=updateInstead` in the guest repo,
+# which `init` sets: a push updates the checked-out working tree, and is refused outright
+# if that tree is dirty. Nothing is ever silently overwritten in either direction.
 
 set -euo pipefail
 
@@ -41,9 +45,11 @@ REMOTE_NAME="vm"
 # image is rebuilt. Pinning it would mean teaching the user to clear a
 # REMOTE HOST IDENTIFICATION HAS CHANGED warning after each re-image, so it is not pinned
 # — the same trust posture Phase 0 accepted for the linux-builder's publicly-known key.
-ssh_opts() {
-  printf '%s' "-p ${SSH_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+trust_opts() {
+  printf '%s' "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 }
+
+ssh_opts() { printf '%s' "-p ${SSH_PORT} $(trust_opts)"; }
 
 usage() { sed -n '2,7p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
@@ -65,13 +71,14 @@ require_vm() {
   fi
 }
 
-# git talks to the VM over the same unpinned ssh; exported so `git push`/`fetch` inherit it.
+# The port lives in the remote URL, not here, so that a hand-typed `git push vm` from this
+# directory also reaches the VM. GIT_SSH_COMMAND carries only the host-key posture.
 setup_git_ssh() {
-  GIT_SSH_COMMAND="ssh $(ssh_opts)"
+  GIT_SSH_COMMAND="ssh $(trust_opts)"
   export GIT_SSH_COMMAND
 }
 
-remote_url() { printf 'ssh://%s@localhost%s' "${VM_USER}" "${VM_PATH}"; }
+remote_url() { printf 'ssh://%s@localhost:%s%s' "${VM_USER}" "${SSH_PORT}" "${VM_PATH}"; }
 
 cmd_init() {
   require_vm

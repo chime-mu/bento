@@ -51,6 +51,8 @@ let
 
         bento gc [--older-than PERIOD | --all]
             Drop old generations and sweep the store. PERIOD defaults to 30d.
+            `--all` keeps only the running generation — on this VM that also throws
+            away every entry you could boot back to, so prefer a period.
 
         bento help
 
