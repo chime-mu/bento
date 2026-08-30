@@ -108,6 +108,21 @@ in
         disable_splash_rendering = true;
       };
 
+      # Hyprland opens a "Hyprland updated to X!" window on the first session after a
+      # version bump, and a periodic donation nag. Both are hyprtoolkit windows, and
+      # through Phases 3-5 neither could be drawn at all — hyprtoolkit asks the GBM
+      # allocator for ABGR16161616F, which virtio-gpu did not offer, and died on the null
+      # (learned/phase-4.md §3). Phase 6's GL makes them work, and the first thing the
+      # update window did was park itself in the middle of every screenshot.
+      #
+      # Off for the same reason hyprlock's `fade_on_empty` and ghostty's `resize-overlay`
+      # are off: on a machine inspected through screenshots, anything that covers the
+      # desktop on its own schedule will eventually be reported as a bug in the desktop.
+      ecosystem = {
+        no_update_news = true;
+        no_donation_nag = true;
+      };
+
       cursor = {
         # There is no hardware cursor plane to put a cursor on. Left to its own devices
         # Hyprland probes for one, and the failure shows up as an invisible or stuttering

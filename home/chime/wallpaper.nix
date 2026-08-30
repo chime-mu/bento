@@ -22,6 +22,17 @@
 # defining property is that it has no GPU (learned/phase-0.md §2), that is the right
 # architecture, and the substitution is arguably an improvement rather than a compromise.
 #
+# **Phase 6 re-tested the AB4H allocation under real GL, as its handoff asked, and it is
+# fixed**: with virtio-gpu-gl the format exists, hyprpaper 0.8.4 runs for as long as you
+# leave it, and the only GBM output is `WARN: GBM: Using modifier-less allocation`. The
+# crash was virtio-gpu's missing half-float format all along, exactly as diagnosed.
+#
+# **swaybg stays anyway.** hyprpaper now works *in one of the two modes this image runs
+# in*: `run-vm.sh --no-gl` is still a supported fallback, and there it would segfault on
+# a loop again. swaybg is correct in both, and everything above about wl_shm being the
+# better fit for this machine is still true. Do not "restore the planned tool" — the
+# re-test the handoff asked for has been done, and this is its answer.
+#
 # The wallpaper file itself is where learned/phase-2.md §3 bites: a new PNG is untracked,
 # a flake cannot see untracked files, and the failure is silent. `bento rebuild` runs
 # `git add -N` first for exactly this. If the desktop comes up empty, check `git status`
