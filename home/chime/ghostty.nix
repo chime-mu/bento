@@ -54,6 +54,15 @@ let
     postBuild = ''
       wrapProgram $out/bin/ghostty --set LIBGL_ALWAYS_SOFTWARE 1
     '';
+
+    # symlinkJoin builds a fresh derivation and does **not** inherit `meta` from what it
+    # joins, so without this every evaluation warns that `lib.getExe` is guessing the main
+    # program's name — twice, from home-manager's ghostty module. Carrying the original
+    # meta forward also keeps the licence and description attached to what is, after all,
+    # still ghostty.
+    meta = pkgs.ghostty.meta // {
+      mainProgram = "ghostty";
+    };
   };
 
   # Ghostty writes colours as `#rrggbb`; the theme stores bare hex because hyprlang wants
