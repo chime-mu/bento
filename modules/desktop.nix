@@ -35,10 +35,12 @@ in
     effects that cost a full-screen shader pass each frame: animations, blur, shadows,
     hardware cursors.
 
-    It deliberately sets no environment variables. Nothing has to be told to fall back:
-    mesa reaches llvmpipe by itself once the GPU refuses a GL context, and the two
-    variables that PLAN-v1 §3 asks for turn out to be one no-op and one active regression
-    (see the sessionVariables comment below, and learned/phase-3.md §2)
+    It sets exactly one environment variable, `GSK_RENDERER=cairo`, and only because that
+    one was measured — GTK 4 has no working renderer here otherwise (see the
+    sessionVariables comment below). Neither of the two that PLAN-v1 §3 asks for is set:
+    one is a no-op and the other an active regression (learned/phase-3.md §2). Nothing
+    else has to be told to fall back — mesa reaches llvmpipe by itself once the GPU
+    refuses a GL context
   '';
 
   config = {
@@ -134,6 +136,29 @@ in
       ELECTRON_OZONE_PLATFORM_HINT = "wayland";
       MOZ_ENABLE_WAYLAND = "1";
       QT_QPA_PLATFORM = "wayland";
-    };
+    }
+    # The one exception to the paragraph above, and it is not one of the two variables
+    # PLAN-v1 names. **GTK 4 has no working renderer on this machine unless it is told to
+    # use the software one**, and its failure mode is the worst kind: it maps a window of
+    # the right size in the right place and draws nothing into it.
+    #
+    # GTK 4 tries Vulkan first — lavapipe is installed, but the loader also finds mesa's
+    # radv ICD, which probes virtio-gpu as an AMD card and fails
+    # (`VK_ERROR_INITIALIZATION_FAILED`) — then falls back to its GL renderer, which fails
+    # the same `DRI2: failed to create screen` that aquamarine survives by moving to the
+    # render node. GTK does not move. Measured on walker, screenshotting the actual
+    # scanout each time:
+    #
+    #   unset      → layer surface mapped 1920x1080, completely transparent
+    #   =vulkan    → nothing
+    #   =gl        → nothing
+    #   =cairo     → the launcher, drawn correctly
+    #
+    # This is *not* a contradiction of learned/phase-3.md §2. That finding was about two
+    # specific variables that were copied from another distribution's guest overlay and
+    # never measured here; this one was measured here, four ways, and the alternative is a
+    # launcher nobody can see. Waybar is untouched by it — GTK 3 draws through cairo
+    # already — and if Phase 6 ever lands real GL, this is one of the lines to delete.
+    // lib.optionalAttrs config.bento.desktop.softwareRendering { GSK_RENDERER = "cairo"; };
   };
 }

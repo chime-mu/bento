@@ -176,8 +176,11 @@ in
         color: ${colors.css.error};
       }
 
-      #tray {
-        padding-right: 14px;
+      /* The bar's own right edge. `#tray` collapses to nothing when the tray is empty,
+         which it is on a machine with no tray applications yet, so its padding cannot be
+         what keeps the last module off the screen edge. */
+      .modules-right {
+        margin-right: 6px;
       }
 
       #tray > .needs-attention {
