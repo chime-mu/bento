@@ -93,7 +93,7 @@ capture trace are appended to `artifacts/bento-app.log`.
 is available as `./scripts/run-vm.sh --windowed`; it starts with a centered 16:9 frame at
 about 75% of the Mac display's usable area and still gets the Carbon bridge. With no
 presentation option, both the script and Bento.app enter full screen. Bento.app is the
-normal interactive launcher because it carries a self-contained, known QEMU binary.
+normal interactive launcher because it carries Bento's known, patched QEMU binary.
 
 `run-vm.sh --headless` drops the window and leaves only the serial console, which is how
 an agent drives it. It keeps the virtio-GPU either way — Hyprland needs a DRM device to
@@ -106,9 +106,11 @@ stage of it — laying out the partitions and installing systemd-boot — runs a
 nested Linux VM that has no KVM to accelerate it. Everything after Phase 2 happens inside
 the bento VM instead, where no builder is involved at all.
 
-If the VM ever comes up at a `Shell>` prompt instead of booting, the EFI variable store has
-a stale boot entry — most likely because the emulated hardware changed underneath it.
-`./scripts/run-vm.sh --reset-vars` clears it.
+The launcher pairs its EFI variable store with the exact QEMU machine/device profile that
+created it. When an upgrade changes the virtual PCI layout, Bento clears that store once
+and firmware rediscovers `/EFI/BOOT/BOOTAA64.EFI`; the guest disk and its generations are
+untouched. If the VM ever comes up at a `Shell>` prompt for another reason,
+`./scripts/run-vm.sh --reset-vars` performs the same recovery manually.
 
 ### GPU acceleration
 
@@ -116,7 +118,7 @@ a stale boot entry — most likely because the emulated hardware changed underne
 normal state of this machine:
 
 ```bash
-./scripts/build-qemu-gl.sh          # once — builds QEMU 10.1.2 into ~/.local/state/bento
+./scripts/build-qemu-gl.sh          # once — builds QEMU 11.1.1 into ~/.local/state/bento
 ./scripts/build-qemu-gl.sh --check  # what is installed, and is it entitled for hvf
 ./scripts/run-vm.sh --windowed      # resizable centered window instead of full screen
 ./scripts/run-vm.sh --no-gl         # force software rendering instead
@@ -124,12 +126,20 @@ normal state of this machine:
 
 Homebrew's QEMU has no OpenGL in it and upstream QEMU's Cocoa UI has no GL code in *any*
 version, so this is a patched local build — ANGLE (GL ES → Metal) plus virglrenderer plus
-akihikodaki's macOS VirGL series. It needs no sudo, replaces nothing, and leaves the
-Homebrew binary in place as the `--no-gl` fallback. The guest ends up reporting
+Try Omarchy's QEMU 11.1 Cocoa/VirGL series. It needs no sudo, replaces nothing, and leaves
+the Homebrew binary in place as the `--no-gl` fallback. The source, device-tree compiler,
+Python build wheels, and every patch are checksum-pinned; configure is forbidden from
+fetching anything else. The guest ends up reporting
 
 ```
 virgl (ANGLE (Apple, Apple M4, OpenGL 4.1 Metal - 90.5))   Accelerated: yes
 ```
+
+The 11.1 runtime also uses Hypervisor.framework's native GICv3 interrupt controller,
+which keeps interrupt injection out of QEMU's global lock. Bento disables the unusable
+virtual PMU, replaces the emulated USB keyboard/tablet path with virtio input devices,
+and supplies guest entropy through virtio RNG. The Cocoa dirty-frame fix clears a latched
+redraw flag after each render instead of uploading the scanout on every refresh tick.
 
 Two things to know before relying on it, both in `learned/phase-6.md`: **screenshots have
 to be taken differently** (below), and this GPU is *faster but narrower* than software
@@ -398,7 +408,7 @@ bento/
     ├── make-wallpaper.py         # regenerate home/chime/theme/tokyo-night.png
     ├── run-vm.sh                 # boot it in QEMU (VirGL by default; --no-gl)
     ├── build-qemu-gl.sh          # build the GL-capable QEMU the host has no bottle for
-    ├── patches/                  # akihikodaki's macOS VirGL series, pinned by sha256
+    ├── patches/                  # QEMU 11.1 Cocoa/VirGL + Bento patches, pinned by sha256
     ├── vm-screenshot.sh          # photograph the guest's screen / send it keystrokes
     ├── screen-colors.py          # …and read the colours back out of that PNG, as numbers
     └── vm-sync.sh                # move commits between this repo and the VM's ~/bento

@@ -28,7 +28,7 @@
 #   * The Mac's Command key is what reaches the guest as Super. Cocoa maps it that way by
 #     default (`swap_opt_cmd` is false), so Omarchy's Super+X scheme is Cmd+X here.
 #   * Bento patches full-grab so keyboard capture follows the key window rather than the
-#     mouse grab. Absolute usb-tablet mode releases the mouse grab as soon as its guest
+#     mouse grab. Absolute virtio-tablet mode releases the mouse grab as soon as its guest
 #     driver binds; without the patch, that unrelated transition leaks Cmd+Space to macOS.
 #   * Current macOS removes the Space event from Cmd+Space even from QEMU's HID event tap.
 #     Bento therefore disables Spotlight's symbolic hotkey only while its window is key,
@@ -51,7 +51,7 @@
 #      and `-display cocoa,gl=es` errors out. Plain virtio-gpu-pci is the only option
 #      there, and the guest renders in software (llvmpipe).
 #
-# So Phase 6 built a second QEMU — a patched 10.1.2 linked against virglrenderer and
+# So Phase 6 built a second QEMU — now QEMU 11.1.1, linked against virglrenderer and
 # ANGLE, installed by ./scripts/build-qemu-gl.sh under ~/.local/state/bento/qemu-gl. When
 # it is present it is used by default, because hosts/bento-vm/default.nix now assumes a
 # GPU. The stock Homebrew binary is never touched or replaced: it stays on PATH as the
@@ -77,8 +77,11 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 ARTIFACTS="${REPO_ROOT}/artifacts"
 DISK="${ARTIFACTS}/bento.qcow2"
 VARS="${ARTIFACTS}/edk2-aarch64-vars.fd"
+VARS_PROFILE="${ARTIFACTS}/edk2-aarch64-vars.profile"
 CODE="/opt/homebrew/share/qemu/edk2-aarch64-code.fd"
 QMP_SOCK="${ARTIFACTS}/qmp.sock"
+VM_LOCK="${ARTIFACTS}/vm.lock"
+VM_LOCK_HELD=0
 
 # Bootstrap geometry before Cocoa publishes its live backing size. The dynamic-display
 # patch replaces this preferred EDID timing as soon as the window exists; stock QEMU and
@@ -141,15 +144,53 @@ if [[ ! -f ${CODE} ]]; then
   exit 1
 fi
 
-if [[ ${RESET_VARS} -eq 1 ]]; then
-  rm -f "${VARS}"
-fi
+release_vm_lock() {
+  if [[ ${VM_LOCK_HELD} -eq 1 ]]; then
+    rm -f -- "${VM_LOCK}/pid"
+    rmdir -- "${VM_LOCK}" 2>/dev/null || true
+    VM_LOCK_HELD=0
+  fi
+}
 
-if [[ ! -f ${VARS} ]]; then
-  echo "==> Creating a blank 64 MiB EFI variable store: ${VARS}"
-  mkdir -p "${ARTIFACTS}"
-  dd if=/dev/zero of="${VARS}" bs=1m count=64 status=none
-fi
+acquire_vm_lock() {
+  local disk_owner lock_owner
+
+  # Older Bento launches predate vm.lock, so check the actual disk first. This also
+  # protects against a manually-launched QEMU and survives a missing/unlinked QMP socket.
+  disk_owner="$(/usr/sbin/lsof -t -- "${DISK}" 2>/dev/null | head -1 || true)"
+  if [[ -n ${disk_owner} ]]; then
+    echo "error: Bento is already running (PID ${disk_owner} has ${DISK} open)" >&2
+    exit 1
+  fi
+
+  if ! mkdir -- "${VM_LOCK}" 2>/dev/null; then
+    lock_owner=""
+    if [[ -r ${VM_LOCK}/pid ]]; then
+      read -r lock_owner < "${VM_LOCK}/pid" || true
+    fi
+    if [[ ${lock_owner} =~ ^[0-9]+$ ]] && kill -0 "${lock_owner}" 2>/dev/null; then
+      echo "error: Bento is already running (launcher PID ${lock_owner})" >&2
+      exit 1
+    fi
+    if [[ -z ${lock_owner} ]]; then
+      echo "error: another Bento launch is acquiring ${VM_LOCK}" >&2
+      echo "       if no launch is active, remove that stale empty directory" >&2
+      exit 1
+    fi
+    rm -f -- "${VM_LOCK}/pid"
+    rmdir -- "${VM_LOCK}" 2>/dev/null || {
+      echo "error: cannot clear stale VM lock: ${VM_LOCK}" >&2
+      exit 1
+    }
+    mkdir -- "${VM_LOCK}"
+  fi
+
+  printf '%s\n' "$$" > "${VM_LOCK}/pid"
+  VM_LOCK_HELD=1
+  trap release_vm_lock EXIT
+}
+
+acquire_vm_lock
 
 if [[ ${GL} == "auto" ]]; then
   if [[ -x ${GL_QEMU} ]]; then GL=1; else GL=0; fi
@@ -177,8 +218,10 @@ fi
 cocoa_opts+=",show-cursor=on,zoom-to-fit=on"
 if [[ ${WINDOWED} -eq 1 ]]; then
   cocoa_opts+=",full-screen=off"
+  if [[ ${GL} -eq 1 ]]; then cocoa_opts+=",immersive=off"; fi
 else
   cocoa_opts+=",full-screen=on"
+  if [[ ${GL} -eq 1 ]]; then cocoa_opts+=",immersive=on"; fi
 fi
 cocoa_opts+=",swap-opt-cmd=off"
 
@@ -205,6 +248,48 @@ if [[ ${HEADLESS} -eq 1 ]]; then
   QEMU="${SOFTWARE_QEMU}"
   gpu_device="virtio-gpu-pci,max_outputs=1,xres=${GPU_XRES},yres=${GPU_YRES}"
   display_args=(-display none)
+fi
+
+machine="virt,accel=hvf"
+qemu_version="$("${QEMU}" --version | head -1)"
+if [[ ${GL} -eq 1 ]]; then
+  if [[ ${qemu_version} != "QEMU emulator version 11.1.1"* ]]; then
+    echo "error: Bento's GL runtime must be QEMU 11.1.1; found: ${qemu_version}" >&2
+    echo "       rebuild it first:  ./scripts/build-qemu-gl.sh --clean" >&2
+    exit 1
+  fi
+  # QEMU 11.1 routes the ARM GICv3 through Hypervisor.framework. Interrupt
+  # injection no longer serializes all vCPUs behind QEMU's global lock.
+  machine+=",gic-version=3"
+fi
+
+# EDK2 records the disk's PCI device path in its writable variable store. That path is
+# only valid for the QEMU machine and device topology that created it: Bento's QEMU 10 ->
+# 11 migration, for example, moved the disk and left firmware dropping into its shell.
+# Pair the store with the host topology that owns it and reset it once when that topology
+# changes. NixOS installs systemd-boot at the standard ARM removable-media path, so a
+# fresh store discovers the existing installation without changing the guest disk.
+efi_profile="qemu=${qemu_version}|machine=${machine}|gpu=${gpu_device%%,*}|topology=bento-20260905-v1"
+saved_efi_profile=""
+if [[ -r ${VARS_PROFILE} ]]; then
+  IFS= read -r saved_efi_profile < "${VARS_PROFILE}" || true
+fi
+
+reset_vars_reason=""
+if [[ ${RESET_VARS} -eq 1 ]]; then
+  reset_vars_reason="requested by --reset-vars"
+elif [[ ! -f ${VARS} ]]; then
+  reset_vars_reason="no variable store exists"
+elif [[ ${saved_efi_profile} != "${efi_profile}" ]]; then
+  reset_vars_reason="the emulated hardware profile changed"
+fi
+
+if [[ -n ${reset_vars_reason} ]]; then
+  echo "==> Creating a blank 64 MiB EFI variable store (${reset_vars_reason})"
+  mkdir -p "${ARTIFACTS}"
+  rm -f "${VARS}"
+  dd if=/dev/zero of="${VARS}" bs=1m count=64 status=none
+  printf '%s\n' "${efi_profile}" > "${VARS_PROFILE}"
 fi
 
 # A stale unix socket from a killed VM makes QEMU exit with "Address already in use".
@@ -244,21 +329,24 @@ if [[ -n ${QEMU_DATA} ]]; then
   qemu_data_args=(-L "${QEMU_DATA}")
 fi
 
-exec "${QEMU}" \
+"${QEMU}" \
   ${qemu_data_args[@]+"${qemu_data_args[@]}"} \
   -name bento \
-  -machine virt,accel=hvf \
-  -cpu host \
-  -smp "${CPUS}" \
+  -machine "${machine}" \
+  -cpu host,pmu=off \
+  -smp "${CPUS},sockets=1,cores=${CPUS},threads=1" \
   -m "${MEMORY}" \
+  -nodefaults \
+  -action reboot=reset,shutdown=poweroff \
   -drive "if=pflash,format=raw,readonly=on,file=${CODE}" \
   -drive "if=pflash,format=raw,file=${VARS}" \
   -drive "if=virtio,format=qcow2,file=${DISK}" \
   -device "${gpu_device}" \
   "${display_args[@]}" \
   -qmp "unix:${QMP_SOCK},server=on,wait=off" \
-  -device qemu-xhci \
-  -device usb-kbd \
-  -device usb-tablet \
+  -device virtio-keyboard-pci,romfile= \
+  -device virtio-tablet-pci,romfile= \
+  -object rng-random,id=bento-rng,filename=/dev/urandom \
+  -device virtio-rng-pci,rng=bento-rng \
   -nic "user,model=virtio-net-pci,hostfwd=tcp::${SSH_PORT}-:22" \
   -serial mon:stdio

@@ -1,0 +1,272 @@
+From: Bento contributors
+Subject: [PATCH] cocoa: route Command-Space through Carbon on macOS
+
+On current macOS 26 builds, a HID CGEventTap receives the Command modifier but
+not the Space event from Command-Space, even with Accessibility permission and
+even after Spotlight's symbolic hotkey is disabled. Carbon's hotkey manager can
+still claim the chord once symbolic hotkey 64 is disabled.
+
+While the QEMU window is key and full-grab is enabled, temporarily disable the
+Spotlight shortcut, register Command-Space with Carbon, and inject guest
+Super-Space when it fires. Restore Spotlight whenever the window resigns key,
+on normal process exit, and before AppKit termination. Resolve the private
+symbolic-hotkey functions dynamically so a future macOS without them degrades
+to QEMU's existing behavior.
+
+Applies after Bento's QEMU 11.1 Cocoa VirGL, display, immersive-mode, and
+full-grab patches.
+
+--- a/meson.build
++++ b/meson.build
+@@ -1221,7 +1221,7 @@
+ endif
+ 
+ cocoa = dependency('appleframeworks',
+-                   modules: ['Cocoa', 'CoreVideo', 'OpenGL', 'QuartzCore'],
++                   modules: ['Cocoa', 'CoreVideo', 'OpenGL', 'QuartzCore', 'Carbon'],
+                    required: get_option('cocoa'))
+ 
+ vmnet = dependency('appleframeworks', modules: 'vmnet', required: get_option('vmnet'))
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -53,6 +53,7 @@
+ #include "qemu/module.h"
+ #include "qemu/error-report.h"
+ #include <Carbon/Carbon.h>
++#include <dlfcn.h>
+ #include <AppKit/NSOpenGL.h>
+ #include "hw/core/cpu.h"
+ 
+@@ -112,6 +113,21 @@
+ static bool immersive_mode_enabled = true;
+ static NSMenuItem *fullScreenMenuItem;
+ 
++#define BENTO_SPOTLIGHT_HOTKEY 64
++#define BENTO_COMMAND_SPACE_SIGNATURE 0x42535043
++
++typedef CGError (*BentoSetSymbolicHotKeyEnabled)(int hotkey, bool enabled);
++typedef bool (*BentoIsSymbolicHotKeyEnabled)(int hotkey);
++
++static BentoSetSymbolicHotKeyEnabled bento_set_symbolic_hotkey_enabled;
++static BentoIsSymbolicHotKeyEnabled bento_is_symbolic_hotkey_enabled;
++static EventHandlerRef bento_command_space_handler;
++static EventHotKeyRef bento_command_space_hotkey;
++static bool bento_symbolic_hotkey_lookup_attempted;
++static bool bento_spotlight_state_known;
++static bool bento_spotlight_was_enabled;
++static bool bento_spotlight_suppressed;
++
+ static bool zoom_interpolation;
+ static NSTextField *pauseLabel;
+ 
+@@ -354,11 +370,76 @@
+ - (void) notifyMouseModeChange;
+ - (BOOL) isMouseGrabbed;
+ - (BOOL) isKeyboardCaptured;
++- (void) captureCommandSpace;
++- (void) releaseCommandSpace;
++- (void) injectCommandSpace;
+ - (void) raiseAllKeys;
+ @end
+ 
+ QemuCocoaView *cocoaView;
++
++static void bento_restore_spotlight(void)
++{
++    if (bento_spotlight_suppressed &&
++        bento_set_symbolic_hotkey_enabled) {
++        bento_set_symbolic_hotkey_enabled(BENTO_SPOTLIGHT_HOTKEY, true);
++        bento_spotlight_suppressed = false;
++    }
++}
++
++static void bento_load_symbolic_hotkey_api(void)
++{
++    if (bento_symbolic_hotkey_lookup_attempted) {
++        return;
++    }
++    bento_symbolic_hotkey_lookup_attempted = true;
++
++    bento_set_symbolic_hotkey_enabled =
++        (BentoSetSymbolicHotKeyEnabled)dlsym(
++            RTLD_DEFAULT, "CGSSetSymbolicHotKeyEnabled");
++    if (!bento_set_symbolic_hotkey_enabled) {
++        bento_set_symbolic_hotkey_enabled =
++            (BentoSetSymbolicHotKeyEnabled)dlsym(
++                RTLD_DEFAULT, "SLSSetSymbolicHotKeyEnabled");
++    }
++    bento_is_symbolic_hotkey_enabled =
++        (BentoIsSymbolicHotKeyEnabled)dlsym(
++            RTLD_DEFAULT, "CGSIsSymbolicHotKeyEnabled");
++    if (!bento_is_symbolic_hotkey_enabled) {
++        bento_is_symbolic_hotkey_enabled =
++            (BentoIsSymbolicHotKeyEnabled)dlsym(
++                RTLD_DEFAULT, "SLSIsSymbolicHotKeyEnabled");
++    }
++
++    if (bento_set_symbolic_hotkey_enabled &&
++        bento_is_symbolic_hotkey_enabled) {
++        bento_spotlight_was_enabled =
++            bento_is_symbolic_hotkey_enabled(BENTO_SPOTLIGHT_HOTKEY);
++        bento_spotlight_state_known = true;
++        atexit(bento_restore_spotlight);
++    }
++}
++
++static OSStatus bento_handle_command_space(EventHandlerCallRef next,
++                                            EventRef event,
++                                            void *user_data)
++{
++    EventHotKeyID hotkey_id;
++    QemuCocoaView *view = user_data;
++    OSStatus result = GetEventParameter(event, kEventParamDirectObject,
++                                        typeEventHotKeyID, NULL,
++                                        sizeof(hotkey_id), NULL, &hotkey_id);
++
++    if (result != noErr ||
++        hotkey_id.signature != BENTO_COMMAND_SPACE_SIGNATURE ||
++        hotkey_id.id != 1 || ![view isKeyboardCaptured]) {
++        return eventNotHandledErr;
++    }
++
++    [view injectCommandSpace];
++    return noErr;
++}
+ 
+ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEventRef cgEvent, void *userInfo)
+ {
+     QemuCocoaView *view = userInfo;
+@@ -805,6 +886,8 @@
+ - (void) setFullGrab:(id)sender
+ {
+     COCOA_DEBUG("QemuCocoaView: setFullGrab\n");
++
++    [self captureCommandSpace];
+ 
+     CGEventMask mask = CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp) | CGEventMaskBit(kCGEventFlagsChanged);
+     eventsTap = CGEventTapCreate(kCGHIDEventTap, kCGHeadInsertEventTap, kCGEventTapOptionDefault,
+@@ -1312,6 +1395,99 @@
+            (full_grab_enabled && [[self window] isKeyWindow]);
+ }
+ 
++- (void) captureCommandSpace
++{
++    EventTypeSpec event_type = {
++        kEventClassKeyboard,
++        kEventHotKeyPressed,
++    };
++    EventHotKeyID hotkey_id = {
++        BENTO_COMMAND_SPACE_SIGNATURE,
++        1,
++    };
++    OSStatus result;
++
++    if (!full_grab_enabled || ![[self window] isKeyWindow] ||
++        bento_command_space_hotkey) {
++        return;
++    }
++
++    bento_load_symbolic_hotkey_api();
++    if (!bento_spotlight_state_known) {
++        warn_report("Bento could not resolve the macOS symbolic-hotkey API; "
++                    "Command-Space remains with Spotlight");
++        return;
++    }
++
++    if (bento_spotlight_was_enabled) {
++        result = bento_set_symbolic_hotkey_enabled(
++            BENTO_SPOTLIGHT_HOTKEY, false);
++        if (result != noErr ||
++            bento_is_symbolic_hotkey_enabled(BENTO_SPOTLIGHT_HOTKEY)) {
++            warn_report("Bento could not disable Spotlight's Command-Space "
++                        "hotkey (error %d)", (int)result);
++            return;
++        }
++        bento_spotlight_suppressed = true;
++    }
++
++    if (!bento_command_space_handler) {
++        result = InstallEventHandler(GetApplicationEventTarget(),
++                                     bento_handle_command_space, 1,
++                                     &event_type, self,
++                                     &bento_command_space_handler);
++        if (result != noErr) {
++            warn_report("Bento could not install its Command-Space handler "
++                        "(error %d)", (int)result);
++            bento_restore_spotlight();
++            return;
++        }
++    }
++
++    result = RegisterEventHotKey(kVK_Space, cmdKey, hotkey_id,
++                                 GetApplicationEventTarget(), 0,
++                                 &bento_command_space_hotkey);
++    if (result != noErr) {
++        bento_command_space_hotkey = NULL;
++        warn_report("Bento could not register Command-Space (error %d)",
++                    (int)result);
++        bento_restore_spotlight();
++        return;
++    }
++    fprintf(stderr, "Bento Command-Space capture enabled\n");
++}
++
++- (void) releaseCommandSpace
++{
++    if (bento_command_space_hotkey) {
++        UnregisterEventHotKey(bento_command_space_hotkey);
++        bento_command_space_hotkey = NULL;
++    }
++    bento_restore_spotlight();
++}
++
++- (void) injectCommandSpace
++{
++    if (![self isKeyboardCaptured]) {
++        return;
++    }
++
++    with_bql(^{
++        bool meta_was_down = qkbd_state_key_get(kbd, KEY_LEFTMETA);
++
++        if (!meta_was_down) {
++            qkbd_state_key_event(kbd, KEY_LEFTMETA, true);
++        }
++        qkbd_state_key_event(kbd, KEY_SPACE, true);
++        qemu_input_event_send_key_delay(100);
++        qkbd_state_key_event(kbd, KEY_SPACE, false);
++        if (!meta_was_down) {
++            qkbd_state_key_event(kbd, KEY_LEFTMETA, false);
++        }
++    });
++    fprintf(stderr, "Bento forwarded Command-Space to the guest\n");
++}
++
+ /*
+  * Makes the target think all down keys are being released.
+  * This prevents a stuck key problem, since we will not see
+@@ -1456,6 +1632,8 @@
+ {
+     COCOA_DEBUG("QemuCocoaAppController: applicationWillTerminate\n");
+ 
++    [cocoaView releaseCommandSpace];
++
+     with_bql(^{
+         shutdown_action = SHUTDOWN_ACTION_POWEROFF;
+         qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_UI);
+@@ -1550,8 +1728,15 @@
+ - (void) windowDidResignKey: (NSNotification *)aNotification
+ {
+     COCOA_DEBUG("%s\n", __func__);
++    [cocoaView releaseCommandSpace];
+     [cocoaView ungrabMouse];
+     [cocoaView raiseAllKeys];
++}
++
++- (void) windowDidBecomeKey: (NSNotification *)aNotification
++{
++    COCOA_DEBUG("%s\n", __func__);
++    [cocoaView captureCommandSpace];
+ }
+ 
+ /* We abstract the method called by the Enter Fullscreen menu item

@@ -79,13 +79,11 @@ private func bundledQEMUDataURL(for qemu: URL) throws -> URL {
     return data
 }
 
-private func qmpSocketIsOpen(in repository: URL) -> Bool {
-    let socket = repository.appendingPathComponent("artifacts/qmp.sock").path
-    guard FileManager.default.fileExists(atPath: socket) else { return false }
-
+private func pathIsOpen(_ path: String) -> Bool {
+    guard FileManager.default.fileExists(atPath: path) else { return false }
     let lsof = Process()
     lsof.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-    lsof.arguments = ["-t", "--", socket]
+    lsof.arguments = ["-t", "--", path]
     lsof.standardInput = FileHandle.nullDevice
     lsof.standardOutput = FileHandle.nullDevice
     lsof.standardError = FileHandle.nullDevice
@@ -96,6 +94,14 @@ private func qmpSocketIsOpen(in repository: URL) -> Bool {
     } catch {
         return false
     }
+}
+
+private func vmIsRunning(in repository: URL) -> Bool {
+    let artifacts = repository.appendingPathComponent("artifacts", isDirectory: true)
+    // The disk is authoritative even if a failed second launch or manual cleanup has
+    // unlinked the live QMP socket. Checking both also preserves the fast normal path.
+    return pathIsOpen(artifacts.appendingPathComponent("qmp.sock").path)
+        || pathIsOpen(artifacts.appendingPathComponent("bento.qcow2").path)
 }
 
 private func openLog(in repository: URL) throws -> (URL, FileHandle) {
@@ -177,10 +183,10 @@ do {
         exit(0)
     }
 
-    if qmpSocketIsOpen(in: repository) {
+    if vmIsRunning(in: repository) {
         _ = alert(
             title: "Bento is already running",
-            message: "A VM is already using Bento's QMP socket. Shut down the existing VM, then reopen Bento.app. This prevents a second launch from disturbing the running instance."
+            message: "A VM already has Bento's control socket or disk open. Shut down the existing VM, then reopen Bento.app. This prevents a second launch from disturbing the running instance."
         )
         exit(1)
     }

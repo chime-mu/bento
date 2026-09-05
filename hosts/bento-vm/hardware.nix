@@ -27,10 +27,10 @@
   boot.growPartition = true;
 
   # systemd-boot, and it must install without writing EFI variables: Homebrew ships no
-  # edk2-aarch64-vars.fd, so run-vm.sh fabricates 64 MiB of zeros and the firmware comes
-  # up with an empty NVRAM every boot (learned/phase-0.md §2). `bootctl install` therefore
-  # has to leave a loader at the removable-media fallback path, /EFI/BOOT/BOOTAA64.EFI,
-  # which is what it does when it cannot record a boot entry.
+  # edk2-aarch64-vars.fd, so run-vm.sh fabricates the initial 64 MiB store and replaces it
+  # when the host's emulated hardware profile changes (learned/phase-0.md §2).
+  # `bootctl install` therefore has to leave a loader at the removable-media fallback
+  # path, /EFI/BOOT/BOOTAA64.EFI, which is what it does without recording a boot entry.
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = false;
 

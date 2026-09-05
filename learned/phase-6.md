@@ -1,5 +1,12 @@
 # What Phase 6 taught us
 
+> **2026-09-05 host-runtime update:** the original measurements below used Bento's
+> QEMU 10.1.2 build. The current build is QEMU 11.1.1 with Try Omarchy's updated
+> Cocoa/VirGL texture-borrowing series, its corrected dirty-frame clear, and native
+> HVF GICv3. `run-vm.sh` also uses virtio keyboard/tablet and RNG devices and disables
+> the unusable guest PMU. The ANGLE → Metal rendering chain described here is unchanged.
+> See the current commands and pinned inputs in `scripts/build-qemu-gl.sh`.
+
 **Date:** 2026-08-30 · **Host:** Apple Silicon MacBook (M4), macOS 26.5.2 · **Guest:** NixOS
 `26.11.20260828.83199d0`, Hyprland **0.56.2**, mesa **26.2.1**, `aarch64`
 **Host QEMU:** **10.1.2** built from source · virglrenderer **1.2.0** · ANGLE

@@ -24,18 +24,18 @@
 #                       come from the startergo/qemu-virgl tap.
 #   2. libepoxy-angle — epoxy built against that ANGLE rather than the system GL, so
 #                       QEMU and virglrenderer resolve the same symbols.
-#   3. the patches    — scripts/patches/qemu-10.1-macos-virgl.patch is akihikodaki's
-#                       macOS VirGL series. It decouples CONFIG_EGL from CONFIG_OPENGL
-#                       (macOS has GL but no EGL, and stock meson.build assumes that is
-#                       impossible), adds OpenGL to cocoa's framework list, and teaches
-#                       virtio-gpu to borrow virglrenderer's scanout texture. The small
-#                       dynamic-display patch then publishes Cocoa's live backing-pixel
-#                       geometry and synthetic density through virtio-gpu EDID. The small
-#                       qemu-10.1-macos-full-grab-focus.patch keeps full-grab keyboard
-#                       capture active while the QEMU window is focused, independently
-#                       of an absolute pointing device's transient mouse-grab state.
-#                       qemu-10.1-macos-command-space-carbon.patch handles the macOS 26
+#   3. the patches    — Try Omarchy's QEMU 11.1 Cocoa/VirGL series decouples
+#                       CONFIG_EGL from CONFIG_OPENGL, adds Cocoa texture borrowing,
+#                       and supplies the Metal-backed scanout path. Its dirty-frame fix
+#                       prevents Cocoa from needlessly redrawing that scanout on every
+#                       refresh tick. The display patches publish live backing-pixel
+#                       geometry through virtio-gpu EDID and separate immersive mode
+#                       from keyboard capture. Bento's Carbon patch handles the macOS 26
 #                       case where WindowServer withholds Space even from a HID event tap.
+#
+# QEMU 11.1 is also the first release whose ARM virt machine uses HVF's native GICv3
+# interrupt controller. That keeps interrupt injection out of QEMU's global lock and is
+# the main reason to build this release rather than carrying the Cocoa series on 10.1.
 #
 # We build rather than pouring the tap's `qemu-virgl` bottle because that bottle links
 # libspice-server, and spice-server pulls gstreamer and ~60 further formulae onto the
@@ -58,22 +58,44 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE="${HOME}/.local/state/bento"
 SRC_DIR="${STATE}/qemu-gl-src"
 PREFIX="${STATE}/qemu-gl"
-VIRGL_PATCH="${REPO_ROOT}/scripts/patches/qemu-10.1-macos-virgl.patch"
-DYNAMIC_DISPLAY_PATCH="${REPO_ROOT}/scripts/patches/qemu-10.1-macos-dynamic-display.patch"
-FULL_GRAB_PATCH="${REPO_ROOT}/scripts/patches/qemu-10.1-macos-full-grab-focus.patch"
-COMMAND_SPACE_PATCH="${REPO_ROOT}/scripts/patches/qemu-10.1-macos-command-space-carbon.patch"
+VIRGL_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-macos-virgl.patch"
+GPU_DIRTY_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-macos-gpu-dirty-flag.patch"
+DYNAMIC_DISPLAY_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-macos-dynamic-display.patch"
+IMMERSIVE_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-macos-immersive-mode.patch"
+FULL_GRAB_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-macos-full-grab-focus.patch"
+COMMAND_SPACE_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-macos-command-space-carbon.patch"
+STRCHRNUL_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-darwin-strchrnul-compat.patch"
 
-QEMU_VERSION="10.1.2"
+QEMU_VERSION="11.1.1"
 QEMU_TARBALL="qemu-${QEMU_VERSION}.tar.xz"
 QEMU_URL="https://download.qemu.org/${QEMU_TARBALL}"
-# The inputs are pinned: the tarball because it comes off the network, the VirGL patch
-# because it was fetched from a *branch* URL that can move, and Bento's local patch so a
-# source edit cannot silently diverge from the binary this script claims to build.
-QEMU_SHA256="9d75f331c1a5cb9b6eb8fd9f64f563ec2eab346c822cb97f8b35cd82d3f11479"
-VIRGL_PATCH_SHA256="d0da295f24ece630f82e685ffa571ce02f11d31f8311942bc0b50d1430f3323a"
-DYNAMIC_DISPLAY_PATCH_SHA256="ca805faa4228ab601ee10a6c4ef22e4876947bc9ac4b4aa7dbefbd64f0aabca6"
-FULL_GRAB_PATCH_SHA256="0a181f643579b48db3b0704eaaa5ec4ad2dee19d0cc1cd31c4d54dea659034e6"
-COMMAND_SPACE_PATCH_SHA256="35e5e596a6f913f32064256ba168545fb22dba6f38d3d02d086d24c3f25d1c23"
+QEMU_SHA256="079ffbff8a7111bbc89022107cbabf3bbfd614d5fc9d7cc675991196aca12482"
+
+# QEMU's release archive carries the dtc wrap but not the wrapped source. Pin the same
+# commit QEMU requests and stage it locally so --disable-download can enforce an offline
+# configure. QEMU's Python environment likewise needs these wheels on Python 3.12+.
+DTC_COMMIT="b6910bec11614980a21e46fbccc35934b671bd81"
+DTC_TARBALL="dtc-${DTC_COMMIT}.tar.gz"
+DTC_URL="https://gitlab.com/qemu-project/dtc/-/archive/${DTC_COMMIT}/${DTC_TARBALL}"
+DTC_SHA256="e115f987eec23a1ba25150a46ced1675de3716072d3b4905afb3a9cda0f007c7"
+
+SETUPTOOLS_WHEEL="setuptools-84.0.0-py3-none-any.whl"
+SETUPTOOLS_URL="https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/${SETUPTOOLS_WHEEL}"
+SETUPTOOLS_SHA256="51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670"
+WHEEL_WHEEL="wheel-0.48.0-py3-none-any.whl"
+WHEEL_URL="https://files.pythonhosted.org/packages/2e/29/69cfbb602cd91690c55d38ba9fe53e6a7e76a6fa647bf38f19c138d25449/${WHEEL_WHEEL}"
+WHEEL_SHA256="3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab"
+PIP_WHEEL="pip-26.2.1-py3-none-any.whl"
+PIP_URL="https://files.pythonhosted.org/packages/f3/6e/1736e5b4ae2b778ef2f81c47d797de9f891d4d8acb047a24ca37a60294dd/${PIP_WHEEL}"
+PIP_SHA256="71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e"
+
+VIRGL_PATCH_SHA256="b20bdf9a7d7ccda5b86366ad9d09a3bf95308b98a06b1ece281344405bcc7ab9"
+GPU_DIRTY_PATCH_SHA256="b554e1ef9910d0891d69ee0fe84e479559c057dc28291e36e1524031808fc69f"
+DYNAMIC_DISPLAY_PATCH_SHA256="1ce59350b6b8e6842bc0c9ca34c97f54cb75e85e2d7b35e5b483858654c4d693"
+IMMERSIVE_PATCH_SHA256="2462463932f7db0d659f754f7f9c182884564dbcd7d4b8e523f1b57f0bd9fe5b"
+FULL_GRAB_PATCH_SHA256="d94aaa7b8b8b97eb25a5ace2b3a1268985e1b16e4e6201847b926b8ee709dbfb"
+COMMAND_SPACE_PATCH_SHA256="9164887a716ed67ced68f13d39d67d73d18f50a612945f9cf8e5ecdb9b22a5ab"
+STRCHRNUL_PATCH_SHA256="ec1048dd0e8ebe53bf7e8a3bca9bf2f5f4336cd607d4cd077437470e9a32094a"
 
 BREW_PREFIX="$(brew --prefix)"
 EPOXY="${BREW_PREFIX}/opt/libepoxy-angle"
@@ -100,14 +122,30 @@ report() {
     return 1
   fi
   echo "binary     ${BINARY}"
-  echo "version    $("${BINARY}" --version | head -1)"
-  local gl entitled failed=0
+  local device_help gl entitled hvf_probe version failed=0
+  version="$("${BINARY}" --version | head -1)"
+  if [[ ${version} == "QEMU emulator version ${QEMU_VERSION}"* ]]; then
+    echo "version    ${version}"
+  else
+    echo "version    ${version} — expected ${QEMU_VERSION}"
+    failed=1
+  fi
   gl="$("${BINARY}" -device help 2>/dev/null | grep -c 'virtio-gpu-gl-pci' || true)"
   if [[ ${gl} -gt 0 ]]; then
     echo "virtio-gpu-gl-pci  present"
   else
     echo "virtio-gpu-gl-pci  MISSING — the build did not pick up virglrenderer"
     failed=1
+  fi
+  device_help="$("${BINARY}" -device help 2>/dev/null)"
+  for device in virtio-keyboard-pci virtio-tablet-pci virtio-rng-pci; do
+    if [[ ${device_help} != *"${device}"* ]]; then
+      echo "${device}  MISSING"
+      failed=1
+    fi
+  done
+  if [[ ${failed} -eq 0 ]]; then
+    echo "virtio input and RNG  present"
   fi
   if strings "${BINARY}" | grep -F 'isKeyboardCaptured' >/dev/null; then
     echo "focused Cmd forward present"
@@ -119,6 +157,12 @@ report() {
     echo "dynamic Retina display present"
   else
     echo "dynamic Retina display MISSING — window geometry will not reach virtio-gpu EDID"
+    failed=1
+  fi
+  if strings "${BINARY}" | grep -F 'immersive' >/dev/null; then
+    echo "immersive Cocoa mode present"
+  else
+    echo "immersive Cocoa mode MISSING"
     failed=1
   fi
   if strings "${BINARY}" | grep -F 'Bento Command-Space capture enabled' >/dev/null; then
@@ -138,6 +182,17 @@ report() {
     failed=1
   fi
   echo "hypervisor entitlement  ${entitled}"
+  if [[ ${entitled} == yes ]]; then
+    hvf_probe="$(printf '{"execute":"qmp_capabilities"}\n{"execute":"quit"}\n' |
+      "${BINARY}" -name bento-hvf-probe -machine virt,accel=hvf,gic-version=3 \
+        -cpu host,pmu=off -nodefaults -display none -S -qmp stdio 2>&1)" || true
+    if [[ ${hvf_probe} == *'"QMP"'* && ${hvf_probe} != *'"error"'* ]]; then
+      echo "HVF GICv3 probe  passed"
+    else
+      echo "HVF GICv3 probe  FAILED"
+      failed=1
+    fi
+  fi
   return "${failed}"
 }
 
@@ -184,22 +239,35 @@ verify_patch() {
 }
 
 verify_patch "${VIRGL_PATCH}" "${VIRGL_PATCH_SHA256}"
+verify_patch "${GPU_DIRTY_PATCH}" "${GPU_DIRTY_PATCH_SHA256}"
 verify_patch "${DYNAMIC_DISPLAY_PATCH}" "${DYNAMIC_DISPLAY_PATCH_SHA256}"
+verify_patch "${IMMERSIVE_PATCH}" "${IMMERSIVE_PATCH_SHA256}"
 verify_patch "${FULL_GRAB_PATCH}" "${FULL_GRAB_PATCH_SHA256}"
 verify_patch "${COMMAND_SPACE_PATCH}" "${COMMAND_SPACE_PATCH_SHA256}"
+verify_patch "${STRCHRNUL_PATCH}" "${STRCHRNUL_PATCH_SHA256}"
 
 # ── source ────────────────────────────────────────────────────────────────────
 mkdir -p "${SRC_DIR}"
 cd "${SRC_DIR}"
 
-if [[ ! -f ${QEMU_TARBALL} ]]; then
-  echo "==> Downloading QEMU ${QEMU_VERSION} (~135 MiB)"
-  curl -fSL --progress-bar -o "${QEMU_TARBALL}" "${QEMU_URL}"
-fi
-if [[ "$(shasum -a 256 "${QEMU_TARBALL}" | cut -d' ' -f1)" != "${QEMU_SHA256}" ]]; then
-  echo "error: ${QEMU_TARBALL} does not match its pinned sha256 — delete it and retry" >&2
-  exit 1
-fi
+obtain_and_verify() {
+  local label="$1" filename="$2" url="$3" expected_sha256="$4"
+  if [[ ! -f ${filename} ]]; then
+    echo "==> Downloading ${label}"
+    curl --fail --location --silent --show-error --retry 3 \
+      --output "${filename}" "${url}"
+  fi
+  if [[ "$(shasum -a 256 "${filename}" | cut -d' ' -f1)" != "${expected_sha256}" ]]; then
+    echo "error: ${filename} does not match its pinned sha256 — delete it and retry" >&2
+    exit 1
+  fi
+}
+
+obtain_and_verify "QEMU ${QEMU_VERSION} (~135 MiB)" "${QEMU_TARBALL}" "${QEMU_URL}" "${QEMU_SHA256}"
+obtain_and_verify "QEMU device-tree compiler source" "${DTC_TARBALL}" "${DTC_URL}" "${DTC_SHA256}"
+obtain_and_verify "setuptools build wheel" "${SETUPTOOLS_WHEEL}" "${SETUPTOOLS_URL}" "${SETUPTOOLS_SHA256}"
+obtain_and_verify "wheel build wheel" "${WHEEL_WHEEL}" "${WHEEL_URL}" "${WHEEL_SHA256}"
+obtain_and_verify "pip build wheel" "${PIP_WHEEL}" "${PIP_URL}" "${PIP_SHA256}"
 
 TREE="${SRC_DIR}/qemu-${QEMU_VERSION}"
 if [[ ${CLEAN} -eq 1 ]]; then
@@ -209,15 +277,25 @@ fi
 if [[ ! -d ${TREE} ]]; then
   echo "==> Unpacking"
   tar xf "${QEMU_TARBALL}"
+  install -m 0644 "${SETUPTOOLS_WHEEL}" "${WHEEL_WHEEL}" "${PIP_WHEEL}" \
+    "${TREE}/python/wheels/"
+  mkdir -p "${TREE}/subprojects/dtc"
+  tar -xzf "${DTC_TARBALL}" -C "${TREE}/subprojects/dtc" --strip-components=1
   echo "==> Applying $(basename "${VIRGL_PATCH}")"
   # --forward makes a re-run a no-op rather than an offer to reverse the patch.
   patch -p1 -d "${TREE}" --batch --forward < "${VIRGL_PATCH}"
+  echo "==> Applying $(basename "${GPU_DIRTY_PATCH}")"
+  patch -p1 -d "${TREE}" --batch --forward < "${GPU_DIRTY_PATCH}"
   echo "==> Applying $(basename "${DYNAMIC_DISPLAY_PATCH}")"
   patch -p1 -d "${TREE}" --batch --forward < "${DYNAMIC_DISPLAY_PATCH}"
+  echo "==> Applying $(basename "${IMMERSIVE_PATCH}")"
+  patch -p1 -d "${TREE}" --batch --forward < "${IMMERSIVE_PATCH}"
   echo "==> Applying $(basename "${FULL_GRAB_PATCH}")"
   patch -p1 -d "${TREE}" --batch --forward < "${FULL_GRAB_PATCH}"
   echo "==> Applying $(basename "${COMMAND_SPACE_PATCH}")"
   patch -p1 -d "${TREE}" --batch --forward < "${COMMAND_SPACE_PATCH}"
+  echo "==> Applying $(basename "${STRCHRNUL_PATCH}")"
+  patch -p1 -d "${TREE}" --batch --forward < "${STRCHRNUL_PATCH}"
 fi
 
 # ── configure + build ─────────────────────────────────────────────────────────
@@ -242,18 +320,24 @@ if [[ ! -f build.ninja ]]; then
   ../configure \
     --prefix="${PREFIX}" \
     --target-list=aarch64-softmmu \
+    --without-default-features \
+    --enable-system \
     --enable-cocoa \
     --enable-opengl \
     --enable-virglrenderer \
     --enable-hvf \
+    --disable-tcg \
+    --enable-pixman \
     --enable-slirp \
-    --enable-curses \
+    --enable-fdt=internal \
     --disable-spice \
     --disable-gtk \
     --disable-sdl \
     --disable-vnc \
     --disable-guest-agent \
     --disable-docs \
+    --disable-download \
+    --disable-werror \
     --extra-cflags="-I${ANGLE}/include" \
     --extra-ldflags="-L${ANGLE}/lib" \
     --extra-ldflags="-Wl,-rpath,${ANGLE}/lib" \
