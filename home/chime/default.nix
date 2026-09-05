@@ -17,6 +17,7 @@
     ./lock.nix
     ./chromium.nix
     ./neovim.nix
+    ./clipboard.nix
   ];
 
   home.stateVersion = "26.11";

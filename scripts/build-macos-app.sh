@@ -2,6 +2,7 @@
 # Build the small native launcher that gives Bento its own macOS privacy identity.
 
 set -euo pipefail
+umask 077
 
 usage() {
   sed -n '/^# Usage:/,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -25,6 +26,7 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SOURCE_DIR="${REPO_ROOT}/macos"
 BUILD_DIR="${REPO_ROOT}/artifacts/macos-app-build"
 APP="${REPO_ROOT}/artifacts/app.noindex/Bento.app"
+DEVELOPER_BRIDGE="${REPO_ROOT}/artifacts/bin/BentoClipboardBridge"
 QEMU_SOURCE="${BENTO_QEMU_SOURCE:-${HOME}/.local/state/bento/qemu-gl/bin/qemu-system-aarch64}"
 QEMU_PREFIX="$(cd -- "$(dirname -- "${QEMU_SOURCE}")/.." && pwd -P)"
 QEMU_DATA_SOURCE="${BENTO_QEMU_DATA_SOURCE:-${QEMU_PREFIX}/share/qemu}"
@@ -66,9 +68,20 @@ if [[ ! -f ${QEMU_DATA_SOURCE}/efi-virtio.rom ]]; then
   echo "error: QEMU's EFI option ROM is missing: ${QEMU_DATA_SOURCE}/efi-virtio.rom" >&2
   exit 1
 fi
+device_help="$("${QEMU_SOURCE}" -device help 2>/dev/null || true)"
+fsdev_help="$("${QEMU_SOURCE}" -fsdev local,help 2>&1 || true)"
+png_link="$(otool -L "${QEMU_SOURCE}" | grep -i 'libpng' || true)"
+if [[ ${device_help} != *"virtio-serial-pci"* || ${device_help} != *"virtio-9p-pci"* \
+      || ${fsdev_help} != *"uid=<num>"* || ${fsdev_help} != *"gid=<num>"* \
+      || -z ${png_link} ]]; then
+  echo "error: ${QEMU_SOURCE} lacks Bento's clipboard/9p/PNG support" >&2
+  echo "       rebuild it first: ./scripts/build-qemu-gl.sh --clean" >&2
+  exit 1
+fi
 
 plutil -lint "${SOURCE_DIR}/Info.plist" >/dev/null
 mkdir -p "${BUILD_DIR}/module-cache" "$(dirname -- "${APP}")"
+chmod 0700 "${REPO_ROOT}/artifacts"
 
 STAGE="$(mktemp -d "${BUILD_DIR}/stage.XXXXXX")"
 trap 'rm -rf -- "${STAGE}"' EXIT
@@ -76,15 +89,27 @@ STAGED_APP="${STAGE}/Bento.app"
 CONTENTS="${STAGED_APP}/Contents"
 QEMU="${CONTENTS}/Resources/runtime/bin/BentoQEMU"
 QEMU_DATA="${CONTENTS}/Resources/runtime/share/qemu"
-mkdir -p "${CONTENTS}/MacOS" "$(dirname -- "${QEMU}")" "${QEMU_DATA}"
+BRIDGE="${CONTENTS}/Helpers/BentoClipboardBridge"
+mkdir -p "${CONTENTS}/MacOS" "${CONTENTS}/Helpers" "$(dirname -- "${QEMU}")" "${QEMU_DATA}"
 
 xcrun swiftc \
   -O \
   -target arm64-apple-macos13.0 \
   -module-cache-path "${BUILD_DIR}/module-cache" \
   -framework AppKit \
+  "${SOURCE_DIR}/BentoLauncherCore.swift" \
   "${SOURCE_DIR}/BentoLauncher.swift" \
   -o "${CONTENTS}/MacOS/BentoLauncher"
+
+xcrun swiftc \
+  -O \
+  -target arm64-apple-macos13.0 \
+  -module-cache-path "${BUILD_DIR}/module-cache" \
+  -framework AppKit \
+  -framework CryptoKit \
+  "${SOURCE_DIR}/ClipboardBridgeCore.swift" \
+  "${SOURCE_DIR}/BentoClipboardBridge.swift" \
+  -o "${BRIDGE}"
 
 install -m 0644 "${SOURCE_DIR}/Info.plist" "${CONTENTS}/Info.plist"
 printf '%s\n' "${REPO_ROOT}" > "${CONTENTS}/Resources/repository-path"
@@ -100,6 +125,7 @@ if [[ ${SIGN_IDENTITY} != - ]]; then
 fi
 codesign "${SIGN_OPTIONS[@]}" --identifier dev.bento.vm \
   --entitlements "${SOURCE_DIR}/qemu-hvf.entitlements" "${QEMU}"
+codesign "${SIGN_OPTIONS[@]}" --identifier dev.bento.vm.clipboard "${BRIDGE}"
 codesign "${SIGN_OPTIONS[@]}" --identifier dev.bento.vm \
   "${CONTENTS}/MacOS/BentoLauncher"
 codesign "${SIGN_OPTIONS[@]}" --identifier dev.bento.vm "${STAGED_APP}"
@@ -109,9 +135,15 @@ rm -rf -- "${APP}"
 ditto "${STAGED_APP}" "${APP}"
 codesign --verify --deep --strict --verbose=2 "${APP}"
 
+# Direct run-vm.sh launches use the same bridge without needing to reach inside the app.
+mkdir -p "$(dirname -- "${DEVELOPER_BRIDGE}")"
+install -m 0755 "${BRIDGE}" "${DEVELOPER_BRIDGE}"
+codesign "${SIGN_OPTIONS[@]}" --identifier dev.bento.vm.clipboard "${DEVELOPER_BRIDGE}"
+
 echo "==> Built ${APP}"
 echo "    bundle id: dev.bento.vm"
 echo "    QEMU: embedded, signed as dev.bento.vm"
+echo "    clipboard bridge: embedded and ${DEVELOPER_BRIDGE}"
 echo "    repository: ${REPO_ROOT}"
 
 if [[ ${INSTALL} -eq 1 ]]; then

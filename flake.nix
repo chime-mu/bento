@@ -76,23 +76,50 @@
         default = self.packages.${system}.bento-image;
       };
 
-      checks.${system}.display-sync =
+      checks.${system} =
         let
           pkgs = nixpkgs.legacyPackages.${system};
         in
-        pkgs.runCommand "bento-display-sync-tests"
-          {
-            nativeBuildInputs = [
-              pkgs.bash
-              pkgs.coreutils
-              pkgs.python3
-            ];
-          }
-          ''
-            export BENTO_DISPLAY_SYNC=${./home/chime/display-sync.sh}
-            python3 ${./tests/test_display_sync.py}
-            touch "$out"
-          '';
+        {
+          display-sync = pkgs.runCommand "bento-display-sync-tests"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.coreutils
+                pkgs.python3
+              ];
+            }
+            ''
+              export BENTO_DISPLAY_SYNC=${./home/chime/display-sync.sh}
+              python3 ${./tests/test_display_sync.py}
+              touch "$out"
+            '';
+
+          clipboard-agent = pkgs.runCommand "bento-clipboard-agent-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              export BENTO_CLIPBOARD_AGENT=${./home/chime/clipboard-agent.py}
+              export BENTO_CLIPBOARD_MODULE=${./home/chime/clipboard.nix}
+              python3 ${./tests/test_clipboard_agent.py}
+              touch "$out"
+            '';
+
+          mount-mac = pkgs.runCommand "bento-mount-mac-tests"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.coreutils
+                pkgs.python3
+              ];
+            }
+            ''
+              export BENTO_MOUNT_MAC=${./hosts/bento-vm/mount-mac.sh}
+              python3 ${./tests/test_mount_mac.py}
+              touch "$out"
+            '';
+        };
 
       # The aarch64-linux builder, with resources that match the host.
       #

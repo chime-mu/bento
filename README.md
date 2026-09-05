@@ -80,14 +80,20 @@ sudo ./scripts/setup-linux-builder.sh
 ./scripts/start-linux-builder.sh   # 1. the builder VM (needed only to build the image)
 ./scripts/build-image.sh           # 2. build the qcow2, stage a 60 G writable copy
 ./scripts/build-macos-app.sh --install # 3. build and install /Applications/Bento.app
-open /Applications/Bento.app       # 4. boot it — immersive full screen, no permission prompt
+open /Applications/Bento.app       # 4. choose integration settings and boot it
 ssh -p 2222 chime@localhost        # 5. log in
 ```
 
-No Accessibility or Input Monitoring permission is required. The app contains Bento's
-patched QEMU and launches this checkout's `scripts/run-vm.sh` in immersive macOS full
-screen; the VM disk remains at `artifacts/bento.qcow2`. Its serial output and Command-Space
-capture trace are appended to `artifacts/bento-app.log`.
+No Accessibility or Input Monitoring permission is required. Every app launch shows a
+small native start window. Clipboard sharing is automatic; the window optionally remembers
+one Mac folder to mount read/write at `~/Mac`. It starts disabled and never creates a host
+folder on its own. An unavailable remembered folder is shown as unavailable and does not
+block the VM from starting.
+
+The app contains Bento's patched QEMU and launches this checkout's `scripts/run-vm.sh` in
+immersive macOS full screen; the VM disk remains at `artifacts/bento.qcow2`. Its serial
+output and Command-Space capture trace are appended to the private
+`artifacts/bento-app.log`.
 
 `./scripts/run-vm.sh` remains the developer/headless entry point. A direct windowed launch
 is available as `./scripts/run-vm.sh --windowed`; it starts with a centered 16:9 frame at
@@ -100,6 +106,23 @@ an agent drives it. It keeps the virtio-GPU either way — Hyprland needs a DRM 
 bind, and QEMU renders the screen into memory whether or not anyone is watching. The login
 password is `bento`; the host's `~/.ssh/id_ed25519` is already authorized, so SSH needs no
 password.
+
+Direct launches have the same integrations in graphical, software, and headless modes:
+
+```bash
+./scripts/run-vm.sh --share "$HOME/Documents/Bento"  # one read/write folder at ~/Mac
+./scripts/run-vm.sh --no-share                        # the default
+./scripts/run-vm.sh --no-clipboard                    # clipboard defaults to enabled
+```
+
+Shared folders must be absolute, canonical, directly owned directories. Bento rejects
+symlinks, whole homes, Library/system/temporary trees, commas and volume roots; a
+user-owned subdirectory on an external volume is allowed. If the guest already has a real
+`~/Mac` path, Bento preserves it, keeps the share at `/mnt/bento-mac`, and records a journal
+warning. With sharing disabled, neither Bento-managed path remains. Text and PNG clipboards
+move automatically in both directions, with text preferred when both are offered and a
+16 MiB decoded payload limit. The guest requests a 1 MiB 9p message size; Linux 6.18's
+virtio transport currently negotiates that down to its 512,000-byte maximum.
 
 Expect step 2 to take a while the first time. It runs on the builder VM, and the last
 stage of it — laying out the partitions and installing systemd-boot — runs a *second*,
@@ -127,9 +150,12 @@ normal state of this machine:
 Homebrew's QEMU has no OpenGL in it and upstream QEMU's Cocoa UI has no GL code in *any*
 version, so this is a patched local build — ANGLE (GL ES → Metal) plus virglrenderer plus
 Try Omarchy's QEMU 11.1 Cocoa/VirGL series. It needs no sudo, replaces nothing, and leaves
-the Homebrew binary in place as the `--no-gl` fallback. The source, device-tree compiler,
-Python build wheels, and every patch are checksum-pinned; configure is forbidden from
-fetching anything else. The guest ends up reporting
+the Homebrew binary in place as an emergency boot fallback. The same patched runtime is
+used for `--no-gl` and `--headless`; rendering flags select only the GPU/display path.
+Folder sharing is refused on the stock fallback because it lacks Bento's guest-owner 9p
+patch. The source, device-tree compiler, Python build wheels, and every patch are
+checksum-pinned; configure is forbidden from fetching anything else. The guest ends up
+reporting
 
 ```
 virgl (ANGLE (Apple, Apple M4, OpenGL 4.1 Metal - 90.5))   Accelerated: yes
@@ -152,15 +178,17 @@ timing and applies an explicit Hyprland modeline on each DRM hotplug change, sel
 scale 2 above 200 PPI, 1.5 above 140 PPI, and 1 otherwise. Native Wayland applications use
 that output scale directly; Bento deliberately sets no global `GDK_SCALE` or
 `QT_SCALE_FACTOR`. Cocoa draws the single visible cursor at host latency while Hyprland's
-guest-rendered copy stays hidden. The stock `--no-gl` path remains bootable, but live
-Retina-sharp resizing is guaranteed only with Bento's patched QEMU; the guest pins the
+guest-rendered copy stays hidden. The stock emergency path remains bootable, but live
+Retina-sharp resizing is guaranteed only with Bento's patched QEMU; the guest pins an
 unpatched software path to a readable 1920x1080 scale-1 fallback.
 
 ## Seeing the screen without looking at it
 
-`run-vm.sh` opens a QMP socket at `artifacts/qmp.sock`, which is enough to photograph the
-guest's display and to press keys on its keyboard — under `--headless`, from a script, with
-no window on screen. **Under VirGL the picture comes from `grim` inside the guest instead**,
+`run-vm.sh` publishes a mode-0600 `artifacts/runtime.json` descriptor for the live VM. It
+contains the QMP socket path inside a fresh mode-0700 runtime directory, the QEMU PID, the
+loopback SSH port, and the GPU mode. `vm-screenshot.sh` consumes it to photograph the guest
+and press keys — under `--headless`, from a script, with no window on screen. **Under VirGL
+the picture comes from `grim` inside the guest instead**,
 because QEMU's `screendump` can only see the pixman surface and the scanout is a GL texture
 by then — it returns an all-black PNG rather than an error. `vm-screenshot.sh` picks the
 right path by looking at what GPU the running QEMU was given; `--scanout` and `--guest`
@@ -177,6 +205,10 @@ and Phase 5's "Ghostty, Chromium and Neovim all launch from the launcher" were v
 without a human at the monitor — including typing a password into the lock screen to check
 that PAM accepts it. Key names are QEMU's: Super is `meta_l`, Return is `ret`, Space is
 `spc`.
+
+SSH is forwarded only on `127.0.0.1`; invalid or out-of-range ports are rejected before
+QEMU starts. Bento also keeps `artifacts/` private and repairs disk, EFI-variable, log, and
+runtime metadata permissions on launch.
 
 Looking at the picture answers *"is something there?"*. For *"is it the right colour?"* —
 a different question, and the one a theme change actually turns on — read the pixels back

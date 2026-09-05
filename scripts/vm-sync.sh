@@ -10,13 +10,10 @@
 #
 # Why git and not a 9p share of this directory — the question Phase 1 left open:
 #
-#   This host's QEMU *does* support 9p (`-fsdev local,security_model=none` initialises
-#   fine on 11.1.1), so sharing /Users/chime/Workspace/Bento straight into the guest was a
-#   real option. It was rejected. `security_model=none` passes host uids through
-#   unmapped, so the repo arrives owned by uid 501 with no matching guest account, and
-#   anything the guest writes lands on the Mac owned by uid 1000; every `nixos-rebuild`
-#   would also drag the whole tree across 9p into the store. More importantly it makes the
-#   guest's configuration depend on a macOS path, which is exactly the coupling that has
+#   Bento now has owner-mapped 9p for one user-selected working folder, but sharing
+#   /Users/chime/Workspace/Bento straight into the guest remains deliberately rejected.
+#   Every `nixos-rebuild` would drag the host tree across 9p into the store, and it would
+#   make the guest's configuration depend on a macOS path — exactly the coupling that has
 #   to be undone when bento moves to bare metal.
 #
 #   So: two real git repositories, and history is the thing that moves between them.

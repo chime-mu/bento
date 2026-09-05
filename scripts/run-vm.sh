@@ -1,115 +1,59 @@
 #!/usr/bin/env bash
 # bento — boot artifacts/bento.qcow2 in QEMU on the Apple Silicon host.
 #
-#   open /Applications/Bento.app       # immersive full screen; no privacy grant needed
-#   ./scripts/run-vm.sh                # developer path; immersive full screen by default
-#   ./scripts/run-vm.sh --windowed     # centered 16:9 window, about 75% of the Mac display
-#   ./scripts/run-vm.sh --headless     # no window; serial console only (what agents use)
-#   ./scripts/run-vm.sh --no-gl        # force software rendering (stock Homebrew QEMU)
-#   ./scripts/run-vm.sh --no-grab      # let macOS keep Cmd+Space and the other system combos
-#   ./scripts/run-vm.sh --reset-vars   # throw away the EFI variable store first
-#   ./scripts/run-vm.sh --memory 4G --cpus 2
+#   ./scripts/run-vm.sh                         # immersive full screen
+#   ./scripts/run-vm.sh --windowed              # resizable Cocoa window
+#   ./scripts/run-vm.sh --headless              # no window; serial console only
+#   ./scripts/run-vm.sh --no-gl                 # software-rendered display
+#   ./scripts/run-vm.sh --share /absolute/path  # read/write at ~/Mac in the guest
+#   ./scripts/run-vm.sh --no-clipboard          # disable automatic clipboard sharing
+#   ./scripts/run-vm.sh --memory 4G --cpus 2 --ssh-port 2222
 #
-# VirGL is used automatically when ./scripts/build-qemu-gl.sh has been run; `--gl` demands
-# it (and fails if it is not built), `--no-gl` refuses it. The banner says which you got.
-#
-# Once up:  ssh -p 2222 chime@localhost
-# To quit:  `poweroff` in the guest, or Ctrl-A X at the serial console.
-#
-# Graphical launches publish the Cocoa window's live backing-pixel geometry through
-# virtio-gpu EDID. Hyprland follows that geometry and chooses scale 1, 1.5, or 2 from its
-# density. Retina-sharp resizing requires Bento's patched GL QEMU; stock QEMU remains a
-# bootable software fallback. `--windowed` starts at a centered 16:9 frame occupying about
-# 75% of the usable Mac display; the default enters native macOS full screen.
-#
-# The window captures Cmd+Space, so it opens the guest's launcher instead of Spotlight.
-# That behavior is enabled by `full-grab=on` and two small ui/cocoa.m patches:
-#
-#   * The Mac's Command key is what reaches the guest as Super. Cocoa maps it that way by
-#     default (`swap_opt_cmd` is false), so Omarchy's Super+X scheme is Cmd+X here.
-#   * Bento patches full-grab so keyboard capture follows the key window rather than the
-#     mouse grab. Absolute virtio-tablet mode releases the mouse grab as soon as its guest
-#     driver binds; without the patch, that unrelated transition leaks Cmd+Space to macOS.
-#   * Current macOS removes the Space event from Cmd+Space even from QEMU's HID event tap.
-#     Bento therefore disables Spotlight's symbolic hotkey only while its window is key,
-#     registers the chord with Carbon, and injects guest Super+Space when Carbon fires.
-#   * On focus loss or normal exit, Bento unregisters the Carbon hotkey and restores the
-#     prior Spotlight setting. This path does not need Accessibility or Input Monitoring.
-#   * Upstream's CGEventTap is still attempted for other system combinations. If macOS
-#     denies it, QEMU prints "Could not create event tap..." and continues; that warning
-#     does not affect Bento's dedicated Cmd+Space bridge.
-#
-# `--no-grab` turns it off. None of this touches vm-screenshot.sh: QMP `sendkey meta_l-spc`
-# is injected into the emulated keyboard and never goes near the host's.
-#
-# Two host quirks, both measured in Phase 0 (learned/phase-0.md §2):
-#
-#   1. Homebrew ships edk2-aarch64-code.fd but NO edk2-aarch64-vars.fd — only a 32-bit
-#      edk2-arm-vars.fd, which is the wrong architecture. So we fabricate the writable
-#      variable store ourselves. Both pflash drives must be 64 MiB or EDK2 won't boot.
-#   2. The *Homebrew* QEMU has no OpenGL compiled in: virtio-gpu-gl-pci does not exist
-#      and `-display cocoa,gl=es` errors out. Plain virtio-gpu-pci is the only option
-#      there, and the guest renders in software (llvmpipe).
-#
-# So Phase 6 built a second QEMU — now QEMU 11.1.1, linked against virglrenderer and
-# ANGLE, installed by ./scripts/build-qemu-gl.sh under ~/.local/state/bento/qemu-gl. When
-# it is present it is used by default, because hosts/bento-vm/default.nix now assumes a
-# GPU. The stock Homebrew binary is never touched or replaced: it stays on PATH as the
-# `--no-gl` fallback, so a broken GL build can cost us performance but never a bootable
-# VM. See learned/phase-6.md.
-#
-# `--headless` drops the *window*, not the GPU. Phase 3 puts Hyprland on this machine, and
-# a compositor needs a DRM device to bind: with no virtio-gpu at all the guest has no
-# /dev/dri/card0 and the graphical session cannot start, which would make the headless mode
-# useless for exactly the phase that needs it most. QEMU renders the scanout into memory
-# whether or not anyone is looking at it — and `screendump` over QMP can then read it back,
-# so an agent with no screen can still see what the display shows (learned/phase-3.md §1).
-#
-# `--headless` implies software rendering, and that is not a limitation worth removing:
-# virtio-gpu-gl needs a display backend to get a GL context from, and `-display none` has
-# none. It is also the *useful* pairing, because under GL a QMP screendump comes back
-# black — the scanout is a GL texture by then and screendump only knows about the pixman
-# surface (learned/phase-6.md §3). Headless is how you photograph a boot failure.
+# Clipboard sharing is enabled by default. Folder sharing is disabled by default. Bento's
+# patched QEMU is used for graphical, software, and headless launches whenever it exists;
+# stock QEMU is only an emergency boot fallback and cannot provide Bento's owner-mapped 9p.
 
 set -euo pipefail
+umask 077
 
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-ARTIFACTS="${REPO_ROOT}/artifacts"
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+ARTIFACTS="${BENTO_ARTIFACTS:-${REPO_ROOT}/artifacts}"
 DISK="${ARTIFACTS}/bento.qcow2"
 VARS="${ARTIFACTS}/edk2-aarch64-vars.fd"
 VARS_PROFILE="${ARTIFACTS}/edk2-aarch64-vars.profile"
-CODE="/opt/homebrew/share/qemu/edk2-aarch64-code.fd"
-QMP_SOCK="${ARTIFACTS}/qmp.sock"
+CODE="${BENTO_EFI_CODE:-/opt/homebrew/share/qemu/edk2-aarch64-code.fd}"
+RUNTIME_DESCRIPTOR="${ARTIFACTS}/runtime.json"
 VM_LOCK="${ARTIFACTS}/vm.lock"
 VM_LOCK_HELD=0
+RUNTIME_DIR=""
+QEMU_PID=""
+BRIDGE_SUPERVISOR_PID=""
+BRIDGE_PID_FILE=""
 
-# Bootstrap geometry before Cocoa publishes its live backing size. The dynamic-display
-# patch replaces this preferred EDID timing as soon as the window exists; stock QEMU and
-# headless mode retain the readable 1080p fallback.
 GPU_XRES="1920"
 GPU_YRES="1080"
-
 MEMORY="8G"
 CPUS="4"
 SSH_PORT="2222"
 HEADLESS=0
 WINDOWED=0
 RESET_VARS=0
-# Capture system key combos so Super+X reaches Hyprland instead of macOS. Default on: the
-# guest is a desktop whose whole keymap hangs off Super, and Cmd+Space is Spotlight's.
 GRAB=1
-# auto: use the GL build if it has been built, the Homebrew one otherwise. The guest
-# config (hosts/bento-vm/default.nix) assumes GL, so defaulting to it keeps the machine
-# running in the mode it was built for; `--no-gl` is the escape hatch and still works.
 GL="auto"
 GL_EXPLICIT=0
+CLIPBOARD=1
+SHARE_PATH=""
 
-# Bento.app supplies its nested, product-signed copy here. Direct CLI launches keep using
-# the developer installation produced by build-qemu-gl.sh.
-GL_QEMU="${BENTO_QEMU:-${HOME}/.local/state/bento/qemu-gl/bin/qemu-system-aarch64}"
+PATCHED_QEMU="${BENTO_QEMU:-${HOME}/.local/state/bento/qemu-gl/bin/qemu-system-aarch64}"
 QEMU_DATA="${BENTO_QEMU_DATA:-}"
 SOFTWARE_QEMU="${BENTO_SOFTWARE_QEMU:-qemu-system-aarch64}"
+CLIPBOARD_BRIDGE="${BENTO_CLIPBOARD_BRIDGE:-${REPO_ROOT}/artifacts/bin/BentoClipboardBridge}"
 QEMU="${SOFTWARE_QEMU}"
+PATCHED_RUNTIME=0
+
+usage() {
+  sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -120,10 +64,14 @@ while [[ $# -gt 0 ]]; do
     --no-grab) GRAB=0; shift ;;
     --grab) GRAB=1; shift ;;
     --reset-vars) RESET_VARS=1; shift ;;
+    --clipboard) CLIPBOARD=1; shift ;;
+    --no-clipboard) CLIPBOARD=0; shift ;;
+    --share) SHARE_PATH="${2:?--share needs an absolute directory}"; shift 2 ;;
+    --no-share) SHARE_PATH=""; shift ;;
     --memory) MEMORY="${2:?--memory needs an argument}"; shift 2 ;;
     --cpus) CPUS="${2:?--cpus needs an argument}"; shift 2 ;;
     --ssh-port) SSH_PORT="${2:?--ssh-port needs an argument}"; shift 2 ;;
-    -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -132,12 +80,90 @@ if [[ ${HEADLESS} -eq 1 && ${WINDOWED} -eq 1 ]]; then
   echo "error: --headless and --windowed are mutually exclusive" >&2
   exit 2
 fi
+if [[ ! ${SSH_PORT} =~ ^[0-9]+$ ]] \
+    || (( 10#${SSH_PORT} < 1 || 10#${SSH_PORT} > 65535 )); then
+  echo "error: --ssh-port must be an integer from 1 through 65535" >&2
+  exit 2
+fi
+SSH_PORT="$((10#${SSH_PORT}))"
+
+# Resolve once and reject paths QEMU's comma-delimited fsdev syntax cannot represent
+# safely. The same policy lives in BentoLauncherCore.swift for the native picker.
+validate_share_path() {
+  /usr/bin/python3 - "$1" <<'PY'
+import os
+import stat
+import sys
+import tempfile
+
+raw = sys.argv[1]
+if not os.path.isabs(raw):
+    raise SystemExit("the shared folder must be an absolute path")
+if "," in raw or any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+    raise SystemExit("the shared folder path cannot contain commas or control characters")
+absolute = os.path.abspath(raw)
+canonical = os.path.realpath(raw)
+if absolute != canonical:
+    raise SystemExit("the shared folder path cannot contain symbolic links")
+try:
+    info = os.lstat(canonical)
+except OSError as error:
+    raise SystemExit(f"the shared folder is unavailable: {error.strerror}")
+if not stat.S_ISDIR(info.st_mode):
+    raise SystemExit("the shared folder must be a directory")
+if info.st_uid != os.getuid():
+    raise SystemExit("the shared folder must be directly owned by the current user")
+
+home = os.path.realpath(os.path.expanduser("~"))
+library = os.path.join(home, "Library")
+blocked_trees = [
+    "/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/etc",
+    "/var", "/dev", "/cores", "/opt", "/private", "/tmp",
+    os.path.realpath(tempfile.gettempdir()),
+]
+if canonical == home:
+    raise SystemExit("sharing the whole home directory is not allowed")
+if canonical == library or canonical.startswith(library + os.sep):
+    raise SystemExit("sharing ~/Library is not allowed")
+if canonical == "/" or any(
+    canonical == root or canonical.startswith(root + os.sep) for root in blocked_trees
+):
+    raise SystemExit("system and temporary directories cannot be shared")
+if canonical == "/Volumes" or os.path.ismount(canonical):
+    raise SystemExit("share a user-owned subdirectory, not a filesystem or volume root")
+print(canonical)
+PY
+}
+
+if [[ -n ${SHARE_PATH} ]]; then
+  if ! validated_share="$(validate_share_path "${SHARE_PATH}" 2>&1)"; then
+    echo "error: ${validated_share}" >&2
+    exit 2
+  fi
+  SHARE_PATH="${validated_share}"
+fi
+
+mkdir -p -- "${ARTIFACTS}"
+chmod 0700 "${ARTIFACTS}"
+for sensitive in \
+  "${DISK}" "${VARS}" "${VARS_PROFILE}" \
+  "${ARTIFACTS}/bento-app.log" "${ARTIFACTS}/vm-boot.log" \
+  "${ARTIFACTS}/bridge.log" "${RUNTIME_DESCRIPTOR}"; do
+  if [[ -e ${sensitive} && ! -L ${sensitive} ]]; then
+    chmod 0600 "${sensitive}"
+  fi
+done
+if [[ -d ${VM_LOCK} && ! -L ${VM_LOCK} ]]; then
+  chmod 0700 "${VM_LOCK}"
+  if [[ -f ${VM_LOCK}/pid && ! -L ${VM_LOCK}/pid ]]; then
+    chmod 0600 "${VM_LOCK}/pid"
+  fi
+fi
 
 if [[ ! -f ${DISK} ]]; then
   echo "error: ${DISK} not found — build it first:  ./scripts/build-image.sh" >&2
   exit 1
 fi
-
 if [[ ! -f ${CODE} ]]; then
   echo "error: EFI firmware missing: ${CODE}" >&2
   echo "       install it with:  brew install qemu" >&2
@@ -152,18 +178,46 @@ release_vm_lock() {
   fi
 }
 
+cleanup() {
+  local status=$?
+  local bridge_pid=""
+  trap - EXIT INT TERM
+  if [[ -n ${BRIDGE_PID_FILE} && -r ${BRIDGE_PID_FILE} ]]; then
+    read -r bridge_pid < "${BRIDGE_PID_FILE}" || true
+    if [[ ${bridge_pid} =~ ^[0-9]+$ ]]; then
+      kill "${bridge_pid}" 2>/dev/null || true
+    fi
+  fi
+  if [[ -n ${BRIDGE_SUPERVISOR_PID} ]]; then
+    kill "${BRIDGE_SUPERVISOR_PID}" 2>/dev/null || true
+    wait "${BRIDGE_SUPERVISOR_PID}" 2>/dev/null || true
+  fi
+  if [[ -n ${QEMU_PID} ]] && kill -0 "${QEMU_PID}" 2>/dev/null; then
+    kill "${QEMU_PID}" 2>/dev/null || true
+    wait "${QEMU_PID}" 2>/dev/null || true
+  fi
+  rm -f -- "${RUNTIME_DESCRIPTOR}"
+  if [[ -n ${RUNTIME_DIR} && -d ${RUNTIME_DIR} ]]; then
+    rm -f -- "${RUNTIME_DIR}/qmp.sock" "${RUNTIME_DIR}/clipboard.sock"
+    rm -f -- "${RUNTIME_DIR}/clipboard-bridge.pid"
+    rmdir -- "${RUNTIME_DIR}" 2>/dev/null || true
+  fi
+  release_vm_lock
+  exit "${status}"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 acquire_vm_lock() {
   local disk_owner lock_owner
-
-  # Older Bento launches predate vm.lock, so check the actual disk first. This also
-  # protects against a manually-launched QEMU and survives a missing/unlinked QMP socket.
   disk_owner="$(/usr/sbin/lsof -t -- "${DISK}" 2>/dev/null | head -1 || true)"
   if [[ -n ${disk_owner} ]]; then
     echo "error: Bento is already running (PID ${disk_owner} has ${DISK} open)" >&2
     exit 1
   fi
 
-  if ! mkdir -- "${VM_LOCK}" 2>/dev/null; then
+  if ! mkdir -m 0700 -- "${VM_LOCK}" 2>/dev/null; then
     lock_owner=""
     if [[ -r ${VM_LOCK}/pid ]]; then
       read -r lock_owner < "${VM_LOCK}/pid" || true
@@ -174,7 +228,6 @@ acquire_vm_lock() {
     fi
     if [[ -z ${lock_owner} ]]; then
       echo "error: another Bento launch is acquiring ${VM_LOCK}" >&2
-      echo "       if no launch is active, remove that stale empty directory" >&2
       exit 1
     fi
     rm -f -- "${VM_LOCK}/pid"
@@ -182,99 +235,101 @@ acquire_vm_lock() {
       echo "error: cannot clear stale VM lock: ${VM_LOCK}" >&2
       exit 1
     }
-    mkdir -- "${VM_LOCK}"
+    mkdir -m 0700 -- "${VM_LOCK}"
   fi
-
   printf '%s\n' "$$" > "${VM_LOCK}/pid"
+  chmod 0600 "${VM_LOCK}/pid"
   VM_LOCK_HELD=1
-  trap release_vm_lock EXIT
 }
 
 acquire_vm_lock
+rm -f -- "${RUNTIME_DESCRIPTOR}"
+RUNTIME_DIR="$(mktemp -d "${ARTIFACTS}/runtime.XXXXXX")"
+chmod 0700 "${RUNTIME_DIR}"
+QMP_SOCK="${RUNTIME_DIR}/qmp.sock"
+CLIPBOARD_SOCK="${RUNTIME_DIR}/clipboard.sock"
+BRIDGE_PID_FILE="${RUNTIME_DIR}/clipboard-bridge.pid"
 
-if [[ ${GL} == "auto" ]]; then
-  if [[ -x ${GL_QEMU} ]]; then GL=1; else GL=0; fi
-elif [[ ${GL} -eq 1 && ! -x ${GL_QEMU} ]]; then
-  # Explicitly asked for, so this is an error rather than a silent downgrade.
-  echo "error: no GL-capable QEMU at ${GL_QEMU}" >&2
+if [[ -x ${PATCHED_QEMU} ]]; then
+  QEMU="${PATCHED_QEMU}"
+  PATCHED_RUNTIME=1
+fi
+
+if [[ ${GL} == auto ]]; then
+  if [[ ${PATCHED_RUNTIME} -eq 1 ]]; then GL=1; else GL=0; fi
+elif [[ ${GL} -eq 1 && ${PATCHED_RUNTIME} -eq 0 ]]; then
+  echo "error: no GL-capable Bento QEMU at ${PATCHED_QEMU}" >&2
   echo "       build it first:  ./scripts/build-qemu-gl.sh" >&2
   exit 1
 fi
 
-gpu_device="virtio-gpu-pci,max_outputs=1,xres=${GPU_XRES},yres=${GPU_YRES}"
-cocoa_opts="cocoa"
-
-if [[ ${GL} -eq 1 ]]; then
-  QEMU="${GL_QEMU}"
-  gpu_device="virtio-gpu-gl-pci,max_outputs=1,xres=${GPU_XRES},yres=${GPU_YRES}"
-  # gl=es, not gl=on: ANGLE implements GL ES over Metal. macOS's own OpenGL stops at
-  # 4.1 and virglrenderer wants more than that, which is why ANGLE is in the picture
-  # at all (learned/phase-6.md §1).
-  cocoa_opts+=",gl=es"
-fi
-
-# Cocoa draws this cursor outside the guest scanout, while Hyprland hides its own copy.
-# zoom-to-fit keeps the QEMU view and the live EDID geometry together during resizes.
-cocoa_opts+=",show-cursor=on,zoom-to-fit=on"
-if [[ ${WINDOWED} -eq 1 ]]; then
-  cocoa_opts+=",full-screen=off"
-  if [[ ${GL} -eq 1 ]]; then cocoa_opts+=",immersive=off"; fi
-else
-  cocoa_opts+=",full-screen=on"
-  if [[ ${GL} -eq 1 ]]; then cocoa_opts+=",immersive=on"; fi
-fi
-cocoa_opts+=",swap-opt-cmd=off"
-
-if [[ ${GRAB} -eq 1 ]]; then
-  # full-grab is a base DisplayCocoa option present in both QEMUs. The local GL build adds
-  # focus-scoped Command forwarding and the Carbon Cmd+Space bridge described above; stock
-  # Homebrew QEMU retains the upstream mouse-grab/event-tap behavior.
-  cocoa_opts+=",full-grab=on"
-fi
-
-display_args=(-display "${cocoa_opts}")
-
 if [[ ${HEADLESS} -eq 1 ]]; then
-  # virtio-gpu-gl needs a display backend that can hand it a GL context; `-display none`
-  # has none to give. If GL was merely inferred, quietly drop back to the software GPU —
-  # `--headless` is what agents use and it must not start failing just because a GL QEMU
-  # got built. If it was asked for by name, say so instead of silently doing something else.
   if [[ ${GL} -eq 1 && ${GL_EXPLICIT} -eq 1 ]]; then
     echo "error: --gl and --headless are mutually exclusive" >&2
-    echo "       virtio-gpu-gl has no display backend to get a GL context from." >&2
     exit 2
   fi
   GL=0
-  QEMU="${SOFTWARE_QEMU}"
-  gpu_device="virtio-gpu-pci,max_outputs=1,xres=${GPU_XRES},yres=${GPU_YRES}"
-  display_args=(-display none)
 fi
 
-machine="virt,accel=hvf"
 qemu_version="$("${QEMU}" --version | head -1)"
-if [[ ${GL} -eq 1 ]]; then
-  if [[ ${qemu_version} != "QEMU emulator version 11.1.1"* ]]; then
-    echo "error: Bento's GL runtime must be QEMU 11.1.1; found: ${qemu_version}" >&2
-    echo "       rebuild it first:  ./scripts/build-qemu-gl.sh --clean" >&2
+if [[ ${PATCHED_RUNTIME} -eq 1 && ${qemu_version} != "QEMU emulator version 11.1.1"* ]]; then
+  echo "error: Bento's patched runtime must be QEMU 11.1.1; found: ${qemu_version}" >&2
+  exit 1
+fi
+
+device_help="$("${QEMU}" -device help 2>/dev/null || true)"
+if [[ ${CLIPBOARD} -eq 1 && ${device_help} != *"virtio-serial-pci"* ]]; then
+  echo "error: the selected QEMU runtime has no virtio-serial support" >&2
+  exit 1
+fi
+if [[ -n ${SHARE_PATH} ]]; then
+  if [[ ${PATCHED_RUNTIME} -eq 0 ]]; then
+    echo "error: --share requires Bento's guest-owner-capable QEMU runtime" >&2
+    echo "       build it first:  ./scripts/build-qemu-gl.sh" >&2
     exit 1
   fi
-  # QEMU 11.1 routes the ARM GICv3 through Hypervisor.framework. Interrupt
-  # injection no longer serializes all vCPUs behind QEMU's global lock.
-  machine+=",gic-version=3"
+  if [[ ${device_help} != *"virtio-9p-pci"* ]]; then
+    echo "error: Bento's QEMU runtime has no virtio-9p support; rebuild it" >&2
+    exit 1
+  fi
+  fsdev_help="$("${QEMU}" -fsdev local,help 2>&1 || true)"
+  if [[ ${fsdev_help} != *"uid=<num>"* || ${fsdev_help} != *"gid=<num>"* ]]; then
+    echo "error: Bento's QEMU runtime lacks the pinned 9p guest-owner patch; rebuild it" >&2
+    exit 1
+  fi
 fi
 
-# EDK2 records the disk's PCI device path in its writable variable store. That path is
-# only valid for the QEMU machine and device topology that created it: Bento's QEMU 10 ->
-# 11 migration, for example, moved the disk and left firmware dropping into its shell.
-# Pair the store with the host topology that owns it and reset it once when that topology
-# changes. NixOS installs systemd-boot at the standard ARM removable-media path, so a
-# fresh store discovers the existing installation without changing the guest disk.
-efi_profile="qemu=${qemu_version}|machine=${machine}|gpu=${gpu_device%%,*}|topology=bento-20260905-v1"
+gpu_device="virtio-gpu-pci,max_outputs=1,xres=${GPU_XRES},yres=${GPU_YRES}"
+GPU_MODE="software"
+cocoa_opts="cocoa"
+if [[ ${GL} -eq 1 ]]; then
+  gpu_device="virtio-gpu-gl-pci,max_outputs=1,xres=${GPU_XRES},yres=${GPU_YRES}"
+  GPU_MODE="virgl"
+  cocoa_opts+=",gl=es"
+fi
+
+cocoa_opts+=",show-cursor=on,zoom-to-fit=on"
+if [[ ${WINDOWED} -eq 1 ]]; then
+  cocoa_opts+=",full-screen=off"
+  if [[ ${PATCHED_RUNTIME} -eq 1 ]]; then cocoa_opts+=",immersive=off"; fi
+else
+  cocoa_opts+=",full-screen=on"
+  if [[ ${PATCHED_RUNTIME} -eq 1 ]]; then cocoa_opts+=",immersive=on"; fi
+fi
+cocoa_opts+=",swap-opt-cmd=off"
+if [[ ${GRAB} -eq 1 ]]; then cocoa_opts+=",full-grab=on"; fi
+
+display_args=(-display "${cocoa_opts}")
+if [[ ${HEADLESS} -eq 1 ]]; then display_args=(-display none); fi
+
+machine="virt,accel=hvf"
+if [[ ${PATCHED_RUNTIME} -eq 1 ]]; then machine+=",gic-version=3"; fi
+
+# The integration devices are appended after the boot disk, but the topology marker still
+# changes once so every existing EFI store is rediscovered under the QEMU 11.1 layout.
+efi_profile="qemu=${qemu_version}|machine=${machine}|gpu=${gpu_device%%,*}|topology=bento-20260905-v3"
 saved_efi_profile=""
-if [[ -r ${VARS_PROFILE} ]]; then
-  IFS= read -r saved_efi_profile < "${VARS_PROFILE}" || true
-fi
-
+if [[ -r ${VARS_PROFILE} ]]; then IFS= read -r saved_efi_profile < "${VARS_PROFILE}" || true; fi
 reset_vars_reason=""
 if [[ ${RESET_VARS} -eq 1 ]]; then
   reset_vars_reason="requested by --reset-vars"
@@ -283,51 +338,44 @@ elif [[ ! -f ${VARS} ]]; then
 elif [[ ${saved_efi_profile} != "${efi_profile}" ]]; then
   reset_vars_reason="the emulated hardware profile changed"
 fi
-
 if [[ -n ${reset_vars_reason} ]]; then
   echo "==> Creating a blank 64 MiB EFI variable store (${reset_vars_reason})"
-  mkdir -p "${ARTIFACTS}"
-  rm -f "${VARS}"
-  dd if=/dev/zero of="${VARS}" bs=1m count=64 status=none
+  rm -f -- "${VARS}"
+  dd if=/dev/zero of="${VARS}" bs=1m count="${BENTO_EFI_VARS_SIZE_MB:-64}" status=none
   printf '%s\n' "${efi_profile}" > "${VARS_PROFILE}"
+  chmod 0600 "${VARS}" "${VARS_PROFILE}"
 fi
-
-# A stale unix socket from a killed VM makes QEMU exit with "Address already in use".
-rm -f "${QMP_SOCK}"
-
-echo "==> Booting bento (${CPUS} cpus, ${MEMORY}, ssh on localhost:${SSH_PORT})"
-if [[ ${GL} -eq 1 ]]; then
-  echo "    VirGL: ${gpu_device%%,*} on $("${QEMU}" --version | head -1)"
-else
-  echo "    software rendering: ${gpu_device%%,*}"
-fi
-if [[ ${HEADLESS} -eq 0 ]]; then
-  if [[ ${GL} -eq 0 ]]; then
-    echo "    display: 1920x1080 software fallback (live Retina resizing unavailable)"
-  elif [[ ${WINDOWED} -eq 1 ]]; then
-    echo "    display: dynamic Retina geometry in a centered 16:9 window"
-  else
-    echo "    display: dynamic Retina geometry in immersive full screen"
-  fi
-  if [[ ${GRAB} -eq 1 ]]; then
-    if [[ ${GL} -eq 1 ]]; then
-      echo "    keyboard: Cmd is Super; Cmd+Space uses Bento's focus-scoped Carbon bridge"
-    else
-      echo "    keyboard: upstream full-grab requested — capture follows the mouse grab"
-    fi
-    echo "              (an event-tap warning affects other system chords, not Cmd+Space)"
-  else
-    echo "    keyboard: not grabbed — macOS keeps Cmd+Space and the other system combos"
-  fi
-fi
-echo "    serial console follows; Ctrl-A X to kill the VM"
-echo "    QMP on ${QMP_SOCK} (screendump, sendkey)"
-echo
 
 qemu_data_args=()
-if [[ -n ${QEMU_DATA} ]]; then
-  qemu_data_args=(-L "${QEMU_DATA}")
+if [[ ${PATCHED_RUNTIME} -eq 1 && -n ${QEMU_DATA} ]]; then qemu_data_args=(-L "${QEMU_DATA}"); fi
+integration_args=()
+if [[ ${CLIPBOARD} -eq 1 ]]; then
+  integration_args+=(
+    -device "virtio-serial-pci,romfile="
+    -chardev "socket,id=bento-clipboard,path=${CLIPBOARD_SOCK},server=on,wait=off"
+    -device "virtserialport,chardev=bento-clipboard,name=dev.bento.clipboard"
+  )
 fi
+if [[ -n ${SHARE_PATH} ]]; then
+  integration_args+=(
+    -fsdev "local,id=bento-mac,path=${SHARE_PATH},security_model=none,multidevs=remap,uid=1000,gid=100"
+    -device "virtio-9p-pci,fsdev=bento-mac,mount_tag=bento-mac,romfile="
+  )
+fi
+
+echo "==> Booting bento (${CPUS} cpus, ${MEMORY}, ssh on 127.0.0.1:${SSH_PORT})"
+echo "    runtime: ${qemu_version}"
+if [[ ${GL} -eq 1 ]]; then
+  echo "    graphics: VirGL through ANGLE/Metal"
+elif [[ ${HEADLESS} -eq 1 ]]; then
+  echo "    graphics: software scanout, headless"
+else
+  echo "    graphics: software-rendered Cocoa display"
+fi
+if [[ -n ${SHARE_PATH} ]]; then echo "    folder: ${SHARE_PATH} -> ~/Mac"; else echo "    folder: disabled"; fi
+if [[ ${CLIPBOARD} -eq 1 ]]; then echo "    clipboard: automatic text/PNG sharing"; else echo "    clipboard: disabled"; fi
+echo "    serial console follows; Ctrl-A X to kill the VM"
+echo
 
 "${QEMU}" \
   ${qemu_data_args[@]+"${qemu_data_args[@]}"} \
@@ -338,9 +386,11 @@ fi
   -m "${MEMORY}" \
   -nodefaults \
   -action reboot=reset,shutdown=poweroff \
+  -boot strict=on \
   -drive "if=pflash,format=raw,readonly=on,file=${CODE}" \
   -drive "if=pflash,format=raw,file=${VARS}" \
-  -drive "if=virtio,format=qcow2,file=${DISK}" \
+  -drive "if=none,id=bento-disk,format=qcow2,file=${DISK}" \
+  -device "virtio-blk-pci,drive=bento-disk,bootindex=1,romfile=" \
   -device "${gpu_device}" \
   "${display_args[@]}" \
   -qmp "unix:${QMP_SOCK},server=on,wait=off" \
@@ -348,5 +398,63 @@ fi
   -device virtio-tablet-pci,romfile= \
   -object rng-random,id=bento-rng,filename=/dev/urandom \
   -device virtio-rng-pci,rng=bento-rng \
-  -nic "user,model=virtio-net-pci,hostfwd=tcp::${SSH_PORT}-:22" \
-  -serial mon:stdio
+  ${integration_args[@]+"${integration_args[@]}"} \
+  -netdev "user,id=bento-net,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" \
+  -device "virtio-net-pci,netdev=bento-net,romfile=" \
+  -serial mon:stdio &
+QEMU_PID=$!
+
+/usr/bin/python3 - "${RUNTIME_DESCRIPTOR}" "${QMP_SOCK}" "${QEMU_PID}" "${SSH_PORT}" "${GPU_MODE}" <<'PY'
+import json
+import os
+import sys
+
+target, qmp, pid, port, gpu = sys.argv[1:]
+temporary = target + ".tmp"
+with open(temporary, "w", encoding="utf-8") as stream:
+    json.dump({"version": 1, "qmp": qmp, "pid": int(pid), "sshPort": int(port), "gpu": gpu}, stream)
+    stream.write("\n")
+os.chmod(temporary, 0o600)
+os.replace(temporary, target)
+PY
+chmod 0600 "${RUNTIME_DESCRIPTOR}"
+echo "    runtime descriptor: ${RUNTIME_DESCRIPTOR}"
+
+if [[ ${CLIPBOARD} -eq 1 ]]; then
+  if [[ -x ${CLIPBOARD_BRIDGE} ]]; then
+    (
+      bridge_pid=""
+      stop_bridge() {
+        trap - EXIT INT TERM
+        if [[ ${bridge_pid} =~ ^[0-9]+$ ]]; then
+          kill "${bridge_pid}" 2>/dev/null || true
+          wait "${bridge_pid}" 2>/dev/null || true
+        fi
+        rm -f -- "${BRIDGE_PID_FILE}"
+        exit 0
+      }
+      trap stop_bridge EXIT INT TERM
+      while kill -0 "${QEMU_PID}" 2>/dev/null; do
+        "${CLIPBOARD_BRIDGE}" --socket "${CLIPBOARD_SOCK}" &
+        bridge_pid=$!
+        printf '%s\n' "${bridge_pid}" > "${BRIDGE_PID_FILE}"
+        wait "${bridge_pid}" || true
+        bridge_pid=""
+        rm -f -- "${BRIDGE_PID_FILE}"
+        kill -0 "${QEMU_PID}" 2>/dev/null || break
+        echo "warning: clipboard bridge stopped; restarting" >&2
+        sleep 1
+      done
+    ) &
+    BRIDGE_SUPERVISOR_PID=$!
+  else
+    echo "warning: clipboard bridge unavailable at ${CLIPBOARD_BRIDGE}; VM startup continues" >&2
+  fi
+fi
+
+set +e
+wait "${QEMU_PID}"
+qemu_status=$?
+set -e
+QEMU_PID=""
+exit "${qemu_status}"

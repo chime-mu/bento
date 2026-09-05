@@ -24,6 +24,8 @@
 
   users.users.chime = {
     isNormalUser = true;
+    uid = 1000;
+    group = "users";
     description = "chime";
     extraGroups = [ "wheel" ];
     # Only ever applied when the account is first created, so changing it later needs
@@ -35,6 +37,7 @@
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICLhxvO9zOG7Ab+8h2iiz4aJrns7YtZMrUHHt5kndGu8 ma@goodmonday.io"
     ];
   };
+  users.groups.users.gid = 100;
 
   # A disposable dev VM whose whole premise is an agent running `nixos-rebuild switch`.
   security.sudo.wheelNeedsPassword = false;

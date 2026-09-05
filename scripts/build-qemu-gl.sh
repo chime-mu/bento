@@ -65,6 +65,7 @@ IMMERSIVE_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-macos-immersive-mode.pat
 FULL_GRAB_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-macos-full-grab-focus.patch"
 COMMAND_SPACE_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-macos-command-space-carbon.patch"
 STRCHRNUL_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-darwin-strchrnul-compat.patch"
+VIRTFS_OWNER_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-virtfs-guest-owner.patch"
 
 QEMU_VERSION="11.1.1"
 QEMU_TARBALL="qemu-${QEMU_VERSION}.tar.xz"
@@ -96,11 +97,13 @@ IMMERSIVE_PATCH_SHA256="2462463932f7db0d659f754f7f9c182884564dbcd7d4b8e523f1b57f
 FULL_GRAB_PATCH_SHA256="d94aaa7b8b8b97eb25a5ace2b3a1268985e1b16e4e6201847b926b8ee709dbfb"
 COMMAND_SPACE_PATCH_SHA256="9164887a716ed67ced68f13d39d67d73d18f50a612945f9cf8e5ecdb9b22a5ab"
 STRCHRNUL_PATCH_SHA256="ec1048dd0e8ebe53bf7e8a3bca9bf2f5f4336cd607d4cd077437470e9a32094a"
+VIRTFS_OWNER_PATCH_SHA256="9748b0c223f0bc8c649d8b7c5c5e574f94e91d5411f9606ef9159c3bb6cd631b"
 
 BREW_PREFIX="$(brew --prefix)"
 EPOXY="${BREW_PREFIX}/opt/libepoxy-angle"
 VIRGL="${BREW_PREFIX}/opt/virglrenderer"
 ANGLE="${BREW_PREFIX}/opt/libangle"
+LIBPNG="${BREW_PREFIX}/opt/libpng"
 
 BINARY="${PREFIX}/bin/qemu-system-aarch64"
 
@@ -122,7 +125,7 @@ report() {
     return 1
   fi
   echo "binary     ${BINARY}"
-  local device_help gl entitled hvf_probe version failed=0
+  local device_help fsdev_help gl entitled hvf_probe version failed=0
   version="$("${BINARY}" --version | head -1)"
   if [[ ${version} == "QEMU emulator version ${QEMU_VERSION}"* ]]; then
     echo "version    ${version}"
@@ -138,14 +141,28 @@ report() {
     failed=1
   fi
   device_help="$("${BINARY}" -device help 2>/dev/null)"
-  for device in virtio-keyboard-pci virtio-tablet-pci virtio-rng-pci; do
+  for device in virtio-keyboard-pci virtio-tablet-pci virtio-rng-pci \
+                virtio-serial-pci virtio-9p-pci; do
     if [[ ${device_help} != *"${device}"* ]]; then
       echo "${device}  MISSING"
       failed=1
     fi
   done
   if [[ ${failed} -eq 0 ]]; then
-    echo "virtio input and RNG  present"
+    echo "virtio input, serial, RNG, and 9p  present"
+  fi
+  fsdev_help="$("${BINARY}" -fsdev local,help 2>&1 || true)"
+  if [[ ${fsdev_help} == *"uid=<num>"* && ${fsdev_help} == *"gid=<num>"* ]]; then
+    echo "9p guest owner mapping  present"
+  else
+    echo "9p guest owner mapping  MISSING"
+    failed=1
+  fi
+  if otool -L "${BINARY}" | grep -qi 'libpng'; then
+    echo "QMP PNG screenshots  present"
+  else
+    echo "QMP PNG screenshots  MISSING"
+    failed=1
   fi
   if strings "${BINARY}" | grep -F 'isKeyboardCaptured' >/dev/null; then
     echo "focused Cmd forward present"
@@ -203,7 +220,7 @@ fi
 
 # ── dependencies ──────────────────────────────────────────────────────────────
 missing=()
-for dep in "${EPOXY}" "${VIRGL}" "${ANGLE}"; do
+for dep in "${EPOXY}" "${VIRGL}" "${ANGLE}" "${LIBPNG}"; do
   [[ -d ${dep} ]] || missing+=("$(basename "${dep}")")
 done
 if [[ ${#missing[@]} -gt 0 ]]; then
@@ -245,6 +262,7 @@ verify_patch "${IMMERSIVE_PATCH}" "${IMMERSIVE_PATCH_SHA256}"
 verify_patch "${FULL_GRAB_PATCH}" "${FULL_GRAB_PATCH_SHA256}"
 verify_patch "${COMMAND_SPACE_PATCH}" "${COMMAND_SPACE_PATCH_SHA256}"
 verify_patch "${STRCHRNUL_PATCH}" "${STRCHRNUL_PATCH_SHA256}"
+verify_patch "${VIRTFS_OWNER_PATCH}" "${VIRTFS_OWNER_PATCH_SHA256}"
 
 # ── source ────────────────────────────────────────────────────────────────────
 mkdir -p "${SRC_DIR}"
@@ -274,6 +292,12 @@ if [[ ${CLEAN} -eq 1 ]]; then
   rm -rf "${TREE}"
 fi
 
+if [[ -d ${TREE} && ! -f ${TREE}/.bento-virtfs-owner-patch ]]; then
+  echo "error: the existing QEMU source predates Bento's 9p owner patch" >&2
+  echo "       rebuild it with: ./scripts/build-qemu-gl.sh --clean" >&2
+  exit 1
+fi
+
 if [[ ! -d ${TREE} ]]; then
   echo "==> Unpacking"
   tar xf "${QEMU_TARBALL}"
@@ -296,10 +320,13 @@ if [[ ! -d ${TREE} ]]; then
   patch -p1 -d "${TREE}" --batch --forward < "${COMMAND_SPACE_PATCH}"
   echo "==> Applying $(basename "${STRCHRNUL_PATCH}")"
   patch -p1 -d "${TREE}" --batch --forward < "${STRCHRNUL_PATCH}"
+  echo "==> Applying $(basename "${VIRTFS_OWNER_PATCH}")"
+  patch -p1 -d "${TREE}" --batch --forward < "${VIRTFS_OWNER_PATCH}"
+  touch "${TREE}/.bento-virtfs-owner-patch"
 fi
 
 # ── configure + build ─────────────────────────────────────────────────────────
-export PKG_CONFIG_PATH="${VIRGL}/lib/pkgconfig:${EPOXY}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+export PKG_CONFIG_PATH="${VIRGL}/lib/pkgconfig:${EPOXY}/lib/pkgconfig:${LIBPNG}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
 BUILD="${TREE}/build"
 mkdir -p "${BUILD}"
@@ -311,7 +338,7 @@ if [[ ! -f build.ninja ]]; then
   # target is minutes of compile for a binary nothing will launch.
   #
   # --disable-spice is the whole reason we build instead of pouring the tap's bottle.
-  # --enable-slirp keeps the `-nic user,hostfwd=` that run-vm.sh forwards ssh over.
+  # --enable-slirp keeps the user-mode netdev that run-vm.sh forwards ssh over.
   #
   # The ANGLE include path is NOT optional and pkg-config will not supply it: epoxy's
   # own egl_generated.h does `#include "EGL/eglplatform.h"`, and that header ships with
@@ -329,6 +356,8 @@ if [[ ! -f build.ninja ]]; then
     --disable-tcg \
     --enable-pixman \
     --enable-slirp \
+    --enable-virtfs \
+    --enable-png \
     --enable-fdt=internal \
     --disable-spice \
     --disable-gtk \
@@ -343,6 +372,10 @@ if [[ ! -f build.ninja ]]; then
     --extra-ldflags="-Wl,-rpath,${ANGLE}/lib" \
     --extra-ldflags="-Wl,-rpath,${EPOXY}/lib" \
     --extra-ldflags="-Wl,-rpath,${VIRGL}/lib"
+elif grep -q '^#undef CONFIG_PNG' config-host.h 2>/dev/null; then
+  echo "error: the existing QEMU build predates PNG screenshot support" >&2
+  echo "       rebuild it with: ./scripts/build-qemu-gl.sh --clean" >&2
+  exit 1
 fi
 
 echo "==> Building (this takes a few minutes)"

@@ -12,6 +12,7 @@
 # autoResize can expand the root filesystem into it on first boot.
 
 set -euo pipefail
+umask 077
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 ARTIFACTS="${REPO_ROOT}/artifacts"
@@ -65,9 +66,11 @@ fi
 echo "==> Built ${src}"
 
 mkdir -p "${ARTIFACTS}"
+chmod 0700 "${ARTIFACTS}"
 rm -f "${DISK}"
 cp "${src}" "${DISK}"
 chmod u+w "${DISK}"
+chmod 0600 "${DISK}"
 
 echo "==> Resizing writable copy to ${DISK_SIZE}"
 qemu-img resize "${DISK}" "${DISK_SIZE}"

@@ -1,0 +1,233 @@
+From: Andrey Erokhin <a.erokhin@inango-systems.com>
+Subject: [RFC PATCH] virtfs: 9p: local: add default uid and gid options
+Date: Mon, 1 Dec 2025 21:00:50 +0300
+
+Backported to QEMU 11.1.1 by Bento from the upstream qemu-devel proposal and
+its February 2026 documentation revision:
+https://www.mail-archive.com/qemu-devel@nongnu.org/msg1155486.html
+https://www.mail-archive.com/qemu-devel@nongnu.org/msg1168293.html
+
+This lets a non-root macOS QEMU expose host-owned files as a fixed guest owner
+without changing their real ownership. Bento uses it only with
+security_model=none.
+
+Signed-off-by: Andrey Erokhin <a.erokhin@inango-systems.com>
+---
+ fsdev/file-op-9p.h      |  4 ++++
+ fsdev/qemu-fsdev-opts.c | 12 ++++++++++++
+ fsdev/qemu-fsdev.c      |  2 ++
+ hw/9pfs/9p-local.c      | 25 +++++++++++++++++++++++++
+ hw/9pfs/9p.c            |  2 ++
+ qemu-options.hx         | 24 ++++++++++++++++++++----
+ system/vl.c             |  9 +++++++++
+ 7 files changed, 74 insertions(+), 4 deletions(-)
+
+diff --git a/fsdev/file-op-9p.h b/fsdev/file-op-9p.h
+--- a/fsdev/file-op-9p.h
++++ b/fsdev/file-op-9p.h
+@@ -95,5 +95,7 @@ typedef struct FsDriverEntry {
+     mode_t fmode;
+     mode_t dmode;
++    uid_t dflt_uid;
++    gid_t dflt_gid;
+     /* temporary storage for parse_opts only */
+     uint32_t max_xattr;
+ } FsDriverEntry;
+@@ -110,6 +112,8 @@ struct FsContext {
+     void *private;
+     mode_t fmode;
+     mode_t dmode;
++    uid_t dflt_uid;
++    gid_t dflt_gid;
+     /* max. amount of simultaneously open xattr FIDs */
+     uint32_t xattr_fid_limit;
+     /* current amount of open xattr FIDs */
+diff --git a/fsdev/qemu-fsdev-opts.c b/fsdev/qemu-fsdev-opts.c
+--- a/fsdev/qemu-fsdev-opts.c
++++ b/fsdev/qemu-fsdev-opts.c
+@@ -46,6 +46,12 @@ static QemuOptsList qemu_fsdev_opts = {
+         }, {
+             .name = "dmode",
+             .type = QEMU_OPT_NUMBER,
++        }, {
++            .name = "uid",
++            .type = QEMU_OPT_NUMBER,
++        }, {
++            .name = "gid",
++            .type = QEMU_OPT_NUMBER,
+         }, {
+             .name = "max_xattr",
+             .type = QEMU_OPT_NUMBER,
+@@ -92,6 +98,12 @@ static QemuOptsList qemu_virtfs_opts = {
+         }, {
+             .name = "dmode",
+             .type = QEMU_OPT_NUMBER,
++        }, {
++            .name = "uid",
++            .type = QEMU_OPT_NUMBER,
++        }, {
++            .name = "gid",
++            .type = QEMU_OPT_NUMBER,
+         }, {
+             .name = "max_xattr",
+             .type = QEMU_OPT_NUMBER,
+diff --git a/fsdev/qemu-fsdev.c b/fsdev/qemu-fsdev.c
+--- a/fsdev/qemu-fsdev.c
++++ b/fsdev/qemu-fsdev.c
+@@ -58,6 +58,8 @@ static FsDriverTable FsDrivers[] = {
+             "writeout",
+             "fmode",
+             "dmode",
++            "uid",
++            "gid",
+             "multidevs",
+             "throttling.bps-total",
+             "throttling.bps-read",
+diff --git a/hw/9pfs/9p-local.c b/hw/9pfs/9p-local.c
+--- a/hw/9pfs/9p-local.c
++++ b/hw/9pfs/9p-local.c
+@@ -198,6 +198,12 @@ static int local_lstat(FsContext *fs_ctx, V9fsPath *fs_path, struct stat *stbuf)
+     if (err) {
+         goto err_out;
+     }
++    if (fs_ctx->dflt_uid != -1) {
++        stbuf->st_uid = fs_ctx->dflt_uid;
++    }
++    if (fs_ctx->dflt_gid != -1) {
++        stbuf->st_gid = fs_ctx->dflt_gid;
++    }
+     if (fs_ctx->export_flags & V9FS_SM_MAPPED) {
+         /* Actual credentials are part of extended attrs */
+         uid_t tmp_uid;
+@@ -788,6 +794,12 @@ static int local_fstat(FsContext *fs_ctx, int fid_type,
+     if (err) {
+         return err;
+     }
++    if (fs_ctx->dflt_uid != -1) {
++        stbuf->st_uid = fs_ctx->dflt_uid;
++    }
++    if (fs_ctx->dflt_gid != -1) {
++        stbuf->st_gid = fs_ctx->dflt_gid;
++    }
+     if (fs_ctx->export_flags & V9FS_SM_MAPPED) {
+         /* Actual credentials are part of extended attrs */
+         uid_t tmp_uid;
+@@ -1609,6 +1621,19 @@ static int local_parse_opts(QemuOpts *opts, FsDriverEntry *fse, Error **errp)
+         }
+     }
+ 
++    if (fse->export_flags & V9FS_SM_PASSTHROUGH) {
++        if (qemu_opt_find(opts, "uid")) {
++            error_setg(errp, "uid is invalid in the passthrough security mode");
++            return -1;
++        }
++        if (qemu_opt_find(opts, "gid")) {
++            error_setg(errp, "gid is invalid in the passthrough security mode");
++            return -1;
++        }
++    }
++    fse->dflt_uid = qemu_opt_get_number(opts, "uid", -1);
++    fse->dflt_gid = qemu_opt_get_number(opts, "gid", -1);
++
+     fse->path = g_strdup(path);
+ 
+     return 0;
+diff --git a/hw/9pfs/9p.c b/hw/9pfs/9p.c
+--- a/hw/9pfs/9p.c
++++ b/hw/9pfs/9p.c
+@@ -4462,6 +4462,8 @@ int v9fs_device_realize_common(V9fsState *s, const V9fsTransport *t,
+ 
+     s->ctx.fmode = fse->fmode;
+     s->ctx.dmode = fse->dmode;
++    s->ctx.dflt_uid = fse->dflt_uid;
++    s->ctx.dflt_gid = fse->dflt_gid;
+ 
+     s->fids = g_hash_table_new(NULL, NULL);
+     qemu_co_rwlock_init(&s->rename_lock);
+diff --git a/qemu-options.hx b/qemu-options.hx
+--- a/qemu-options.hx
++++ b/qemu-options.hx
+@@ -1940,7 +1940,7 @@ ERST
+ 
+ DEF("fsdev", HAS_ARG, QEMU_OPTION_fsdev,
+     "-fsdev local,id=id,path=path,security_model=mapped-xattr|mapped-file|passthrough|none\n"
+-    " [,writeout=immediate][,readonly=on][,fmode=fmode][,dmode=dmode][,max_xattr=max]\n"
++    " [,writeout=immediate][,readonly=on][,fmode=fmode][,dmode=dmode][,uid=uid][,gid=gid][,max_xattr=max]\n"
+     " [[,throttling.bps-total=b]|[[,throttling.bps-read=r][,throttling.bps-write=w]]]\n"
+     " [[,throttling.iops-total=i]|[[,throttling.iops-read=r][,throttling.iops-write=w]]]\n"
+     " [[,throttling.bps-total-max=bm]|[[,throttling.bps-read-max=rm][,throttling.bps-write-max=wm]]]\n"
+@@ -1952,3 +1952,3 @@
+ SRST
+-``-fsdev local,id=id,path=path,security_model=security_model [,writeout=writeout][,readonly=on][,fmode=fmode][,dmode=dmode][,max_xattr=max] [,throttling.option=value[,throttling.option=value[,...]]]``
++``-fsdev local,id=id,path=path,security_model=security_model [,writeout=writeout][,readonly=on][,fmode=fmode][,dmode=dmode][,uid=uid][,gid=gid][,max_xattr=max] [,throttling.option=value[,throttling.option=value[,...]]]``
+   \
+@@ -2002,6 +2002,14 @@ SRST
+     ``dmode=dmode``
+         Specifies the default mode for newly created directories on the
+         host. Works only with security models "mapped-xattr" and
+         "mapped-file".
+ 
++    ``uid=uid``
++        Specifies the default uid for files and directories. Works with
++        security models "mapped-xattr", "mapped-file" and "none".
++
++    ``gid=gid``
++        Specifies the default gid for files and directories. Works with
++        security models "mapped-xattr", "mapped-file" and "none".
++
+     ``throttling.bps-total=b,throttling.bps-read=r,throttling.bps-write=w``
+@@ -2052,10 +2060,10 @@ ERST
+ DEF("virtfs", HAS_ARG, QEMU_OPTION_virtfs,
+     "-virtfs local,path=path,mount_tag=tag,security_model=mapped-xattr|mapped-file|passthrough|none\n"
+-    "        [,id=id][,writeout=immediate][,readonly=on][,fmode=fmode][,dmode=dmode][,multidevs=remap|forbid|warn][,max_xattr=max]\n"
++    "        [,id=id][,writeout=immediate][,readonly=on][,fmode=fmode][,dmode=dmode][,uid=uid][,gid=gid][,multidevs=remap|forbid|warn][,max_xattr=max]\n"
+     "-virtfs synth,mount_tag=tag[,id=id][,readonly=on][,max_xattr=max]\n",
+     QEMU_ARCH_ALL)
+ 
+ SRST
+-``-virtfs local,path=path,mount_tag=mount_tag ,security_model=security_model[,writeout=writeout][,readonly=on] [,fmode=fmode][,dmode=dmode][,multidevs=multidevs][,max_xattr=max]``
++``-virtfs local,path=path,mount_tag=mount_tag ,security_model=security_model[,writeout=writeout][,readonly=on] [,fmode=fmode][,dmode=dmode][,uid=uid][,gid=gid][,multidevs=multidevs][,max_xattr=max]``
+   \
+ ``-virtfs synth,mount_tag=mount_tag[,max_xattr=max]``
+@@ -2118,6 +2126,14 @@ SRST
+     ``dmode=dmode``
+         Specifies the default mode for newly created directories on the
+         host. Works only with security models "mapped-xattr" and
+         "mapped-file".
+ 
++    ``uid=uid``
++        Specifies the default uid for files and directories. Works with
++        security models "mapped-xattr", "mapped-file" and "none".
++
++    ``gid=gid``
++        Specifies the default gid for files and directories. Works with
++        security models "mapped-xattr", "mapped-file" and "none".
++
+     ``mount_tag=mount_tag``
+diff --git a/system/vl.c b/system/vl.c
+--- a/system/vl.c
++++ b/system/vl.c
+@@ -3267,7 +3267,7 @@ void qemu_init(int argc, char **argv)
+                 QemuOpts *fsdev;
+                 QemuOpts *device;
+                 const char *writeout, *sock_fd, *socket, *path, *security_model,
+-                           *multidevs, *max_xattr_str;
++                           *uid, *gid, *multidevs, *max_xattr_str;
+ 
+                 olist = qemu_find_opts("virtfs");
+                 if (!olist) {
+@@ -3318,6 +3319,14 @@ void qemu_init(int argc, char **argv)
+                     qemu_opt_set(fsdev, "security_model", security_model,
+                                  &error_abort);
+                 }
++                uid = qemu_opt_get(opts, "uid");
++                if (uid) {
++                    qemu_opt_set(fsdev, "uid", uid, &error_abort);
++                }
++                gid = qemu_opt_get(opts, "gid");
++                if (gid) {
++                    qemu_opt_set(fsdev, "gid", gid, &error_abort);
++                }
+                 socket = qemu_opt_get(opts, "socket");
+                 if (socket) {
+                     qemu_opt_set(fsdev, "socket", socket, &error_abort);

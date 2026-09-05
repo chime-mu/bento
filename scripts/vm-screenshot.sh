@@ -42,10 +42,12 @@
 # socket, and it needs a capabilities handshake before it accepts a command.
 
 set -euo pipefail
+umask 077
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-ARTIFACTS="${REPO_ROOT}/artifacts"
-QMP_SOCK="${ARTIFACTS}/qmp.sock"
+ARTIFACTS="${BENTO_ARTIFACTS:-${REPO_ROOT}/artifacts}"
+RUNTIME_DESCRIPTOR="${ARTIFACTS}/runtime.json"
+QMP_SOCK=""
 
 # Each entry is "key:<qemu keyname>" or "type:<literal string>", kept in one list so the
 # two interleave in the order the caller wrote them.
@@ -55,6 +57,7 @@ OUT=""
 MODE="auto"
 SSH_PORT="2222"
 VM_USER="chime"
+GPU_MODE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -69,6 +72,47 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ ! -f ${RUNTIME_DESCRIPTOR} || -L ${RUNTIME_DESCRIPTOR} ]]; then
+  echo "error: no private runtime descriptor at ${RUNTIME_DESCRIPTOR} — is the VM running?" >&2
+  echo "       start it with:  ./scripts/run-vm.sh [--headless]" >&2
+  exit 1
+fi
+
+runtime_fields="$(/usr/bin/python3 - "${RUNTIME_DESCRIPTOR}" <<'PY'
+import json
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+info = os.stat(path, follow_symlinks=False)
+if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+    raise SystemExit("runtime descriptor has unsafe ownership or permissions")
+with open(path, encoding="utf-8") as stream:
+    value = json.load(stream)
+if value.get("version") != 1:
+    raise SystemExit("unsupported runtime descriptor version")
+qmp = value.get("qmp")
+pid = value.get("pid")
+port = value.get("sshPort")
+gpu = value.get("gpu")
+if (not isinstance(qmp, str) or not os.path.isabs(qmp)
+        or not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0
+        or not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535):
+    raise SystemExit("invalid runtime descriptor")
+if gpu not in ("virgl", "software"):
+    raise SystemExit("invalid GPU mode in runtime descriptor")
+print(f"{qmp}\t{pid}\t{port}\t{gpu}")
+PY
+)" || {
+  echo "error: could not read ${RUNTIME_DESCRIPTOR}" >&2
+  exit 1
+}
+IFS=$'\t' read -r QMP_SOCK QEMU_PID SSH_PORT GPU_MODE <<< "${runtime_fields}"
+if [[ ! ${QEMU_PID} =~ ^[0-9]+$ ]] || ! kill -0 "${QEMU_PID}" 2>/dev/null; then
+  echo "error: Bento's runtime descriptor is stale" >&2
+  exit 1
+fi
 if [[ ! -S ${QMP_SOCK} ]]; then
   echo "error: no QMP socket at ${QMP_SOCK} — is the VM running?" >&2
   echo "       start it with:  ./scripts/run-vm.sh [--headless]" >&2
@@ -85,22 +129,10 @@ case "${OUT}" in
   *) OUT="$(pwd)/${OUT}" ;;
 esac
 
-# Which capture path? Ask the running QEMU what GPU it was given. `ps` rather than
-# `pgrep -f`, whose pattern would also match this script's own command line — the mistake
-# learned/phase-3.md §7 and phase-4.md §7 each record once.
-#
-# Two traps in one line, and both fail the same silent way — always answering "scanout",
-# whose symptom is the black screenshot this check exists to prevent:
-#
-#   1. `-ww` is load-bearing. macOS ps truncates each line to the terminal width, and
-#      `-device virtio-gpu-gl-pci` sits ~250 characters into run-vm.sh's command line.
-#   2. The match is a bash pattern, not `| grep -q`. Under `set -o pipefail` a *successful*
-#      `grep -q` is what breaks it: grep exits at the first match, ps gets SIGPIPE and
-#      dies, and pipefail then reports the pipeline as failed. Finding what you were
-#      looking for makes the test say no.
+# The launcher records the selected GPU mode alongside QMP and SSH coordinates. This is
+# exact and avoids inspecting every process command line on the host.
 if [[ ${MODE} == "auto" ]]; then
-  qemu_cmdlines="$(ps -Awwo command= || true)"
-  if [[ ${qemu_cmdlines} == *virtio-gpu-gl* ]]; then
+  if [[ ${GPU_MODE} == "virgl" ]]; then
     MODE="guest"
   else
     MODE="scanout"

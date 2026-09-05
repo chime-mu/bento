@@ -51,6 +51,8 @@
     "virtio_blk"
     "virtio_scsi"
     "virtio_net"
+    "9p"
+    "9pnet_virtio"
     "xhci_pci"
     "usbhid"
     "sr_mod"
