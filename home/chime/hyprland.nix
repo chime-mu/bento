@@ -7,6 +7,7 @@
 # separately-built Hyprland in the user profile and let `Hyprland` mean different binaries
 # depending on PATH order.
 {
+  config,
   lib,
   osConfig,
   pkgs,
@@ -21,6 +22,23 @@ let
   # — and answering it from the host rather than hardcoding it is what keeps this file
   # correct when bento eventually boots on real hardware.
   softwareRendering = osConfig.bento.desktop.softwareRendering;
+  dynamicDisplay = osConfig.bento.desktop.dynamicDisplay;
+
+  # QEMU's Cocoa frontend refreshes virtio-gpu's EDID whenever its backing-pixel
+  # geometry changes. Hyprland 0.56/Aquamarine 0.14 retain a stale mode cache for an
+  # already-connected DRM output, so this helper decodes the fresh detailed timing
+  # and applies it as an explicit modeline. It also computes a clean fractional scale
+  # from the EDID density. Keep the implementation in a plain file so its parser and
+  # event filtering can be unit-tested without evaluating a Nix derivation first.
+  displaySync = pkgs.writeShellApplication {
+    name = "bento-display-sync";
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.python3
+      pkgs.systemd
+    ];
+    text = builtins.readFile ./display-sync.sh;
+  };
 
   # Super+1..9 and Super+0 for workspace 10, plus the Shift variants that move the focused
   # window there. Written out rather than hand-listed because twenty near-identical lines
@@ -99,10 +117,9 @@ in
       # so this is a message to a process that is already up, not a cold GTK4 start.
       "$launcher" = "walker";
 
-      # No hardcoded mode: virtio-gpu ships an EDID (edid=on by default) carrying the
-      # xres/yres that scripts/run-vm.sh asks for, so `preferred` tracks the QEMU window
-      # instead of fighting it. Scale 1 — the Cocoa display is not HiDPI-aware here without
-      # try-omarchy's QEMU patch (learned/phase-0.md §3).
+      # Output-agnostic on purpose. This is the safe rule before the session service runs
+      # and for unpatched software QEMU; bento-display-sync replaces the same catch-all
+      # rule with the live EDID modeline and computed Retina scale. Never name Virtual-1.
       monitor = ",preferred,auto,1";
 
       general = {
@@ -159,9 +176,13 @@ in
       };
 
       cursor = {
-        # There is no hardware cursor plane to put a cursor on. Left to its own devices
-        # Hyprland probes for one, and the failure shows up as an invisible or stuttering
-        # pointer rather than as an error.
+        # Cocoa composites the visible host cursor outside the guest scanout, giving it
+        # native latency. Hide Hyprland's copy or resizing/fullscreen transitions show two
+        # pointers. On a future non-Cocoa host dynamicDisplay stays false.
+        invisible = dynamicDisplay;
+
+        # There is no hardware cursor plane under llvmpipe. Left to its own devices
+        # Hyprland probes for one, and the failure shows up as a stuttering pointer.
         no_hardware_cursors = softwareRendering;
       };
 
@@ -225,7 +246,31 @@ in
     };
   };
 
+  # Home Manager's Hyprland integration reaches this target only after importing
+  # WAYLAND_DISPLAY and HYPRLAND_INSTANCE_SIGNATURE into systemd. The helper applies
+  # the current EDID immediately, then monitors DRM hotplug changes; its own retry loop
+  # recreates udevadm if the monitor exits, while Restart covers an unexpected helper exit.
+  systemd.user.services = lib.optionalAttrs dynamicDisplay {
+    bento-display-sync = {
+      Unit = {
+        Description = "Synchronize Hyprland with Bento's Cocoa display";
+        PartOf = [ config.wayland.systemd.target ];
+        After = [ config.wayland.systemd.target ];
+        ConditionEnvironment = [ "HYPRLAND_INSTANCE_SIGNATURE" ];
+      };
+
+      Service = {
+        Type = "simple";
+        ExecStart = lib.getExe displaySync;
+        Restart = "on-failure";
+        RestartSec = 1;
+      };
+
+      Install.WantedBy = [ config.wayland.systemd.target ];
+    };
+  };
+
   # The screenshot bind writes here, and grim will not create the directory itself.
-  home.packages = [ keybindingsMenu ];
+  home.packages = [ keybindingsMenu ] ++ lib.optionals dynamicDisplay [ displaySync ];
   home.file."Pictures/.keep".text = "";
 }

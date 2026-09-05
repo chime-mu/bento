@@ -76,6 +76,24 @@
         default = self.packages.${system}.bento-image;
       };
 
+      checks.${system}.display-sync =
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        pkgs.runCommand "bento-display-sync-tests"
+          {
+            nativeBuildInputs = [
+              pkgs.bash
+              pkgs.coreutils
+              pkgs.python3
+            ];
+          }
+          ''
+            export BENTO_DISPLAY_SYNC=${./home/chime/display-sync.sh}
+            python3 ${./tests/test_display_sync.py}
+            touch "$out"
+          '';
+
       # The aarch64-linux builder, with resources that match the host.
       #
       # Stock `darwin.linux-builder` gives the guest 1 core and 3 GiB. That is painful

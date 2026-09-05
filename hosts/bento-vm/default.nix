@@ -39,6 +39,13 @@
   # unconditional (learned/phase-6.md §4).
   bento.desktop.softwareRendering = false;
 
+  # Bento's patched Cocoa frontend continuously republishes the Mac window's backing
+  # geometry through virtio-gpu EDID. This is a host capability rather than a generic
+  # desktop preference: it enables the guest display synchronizer and tells Hyprland
+  # to leave pointer composition to Cocoa. The same cursor path also works with the
+  # stock software QEMU because run-vm.sh passes show-cursor=on in graphical modes.
+  bento.desktop.dynamicDisplay = true;
+
   # The release this machine was first installed from. Never bump it to follow nixpkgs —
   # it exists precisely to keep stateful defaults (databases, service layouts) stable
   # across upgrades.

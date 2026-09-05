@@ -29,6 +29,8 @@
 #                       (macOS has GL but no EGL, and stock meson.build assumes that is
 #                       impossible), adds OpenGL to cocoa's framework list, and teaches
 #                       virtio-gpu to borrow virglrenderer's scanout texture. The small
+#                       dynamic-display patch then publishes Cocoa's live backing-pixel
+#                       geometry and synthetic density through virtio-gpu EDID. The small
 #                       qemu-10.1-macos-full-grab-focus.patch keeps full-grab keyboard
 #                       capture active while the QEMU window is focused, independently
 #                       of an absolute pointing device's transient mouse-grab state.
@@ -57,6 +59,7 @@ STATE="${HOME}/.local/state/bento"
 SRC_DIR="${STATE}/qemu-gl-src"
 PREFIX="${STATE}/qemu-gl"
 VIRGL_PATCH="${REPO_ROOT}/scripts/patches/qemu-10.1-macos-virgl.patch"
+DYNAMIC_DISPLAY_PATCH="${REPO_ROOT}/scripts/patches/qemu-10.1-macos-dynamic-display.patch"
 FULL_GRAB_PATCH="${REPO_ROOT}/scripts/patches/qemu-10.1-macos-full-grab-focus.patch"
 COMMAND_SPACE_PATCH="${REPO_ROOT}/scripts/patches/qemu-10.1-macos-command-space-carbon.patch"
 
@@ -68,6 +71,7 @@ QEMU_URL="https://download.qemu.org/${QEMU_TARBALL}"
 # source edit cannot silently diverge from the binary this script claims to build.
 QEMU_SHA256="9d75f331c1a5cb9b6eb8fd9f64f563ec2eab346c822cb97f8b35cd82d3f11479"
 VIRGL_PATCH_SHA256="d0da295f24ece630f82e685ffa571ce02f11d31f8311942bc0b50d1430f3323a"
+DYNAMIC_DISPLAY_PATCH_SHA256="ca805faa4228ab601ee10a6c4ef22e4876947bc9ac4b4aa7dbefbd64f0aabca6"
 FULL_GRAB_PATCH_SHA256="0a181f643579b48db3b0704eaaa5ec4ad2dee19d0cc1cd31c4d54dea659034e6"
 COMMAND_SPACE_PATCH_SHA256="35e5e596a6f913f32064256ba168545fb22dba6f38d3d02d086d24c3f25d1c23"
 
@@ -97,22 +101,31 @@ report() {
   fi
   echo "binary     ${BINARY}"
   echo "version    $("${BINARY}" --version | head -1)"
-  local gl entitled
+  local gl entitled failed=0
   gl="$("${BINARY}" -device help 2>/dev/null | grep -c 'virtio-gpu-gl-pci' || true)"
   if [[ ${gl} -gt 0 ]]; then
     echo "virtio-gpu-gl-pci  present"
   else
     echo "virtio-gpu-gl-pci  MISSING — the build did not pick up virglrenderer"
+    failed=1
   fi
   if strings "${BINARY}" | grep -F 'isKeyboardCaptured' >/dev/null; then
     echo "focused Cmd forward present"
   else
     echo "focused Cmd forward MISSING — ordinary Cmd chords follow the mouse grab"
+    failed=1
+  fi
+  if strings "${BINARY}" | grep -F 'windowDidChangeBackingProperties:' >/dev/null; then
+    echo "dynamic Retina display present"
+  else
+    echo "dynamic Retina display MISSING — window geometry will not reach virtio-gpu EDID"
+    failed=1
   fi
   if strings "${BINARY}" | grep -F 'Bento Command-Space capture enabled' >/dev/null; then
     echo "Carbon Cmd+Space bridge present"
   else
     echo "Carbon Cmd+Space bridge MISSING — Spotlight will keep the shortcut"
+    failed=1
   fi
   # `-display help` prints the backend list, then a blank line and two paragraphs of
   # prose about suboptions. Stop at the blank line or the prose comes with it.
@@ -122,8 +135,10 @@ report() {
     entitled="yes"
   else
     entitled="NO — hvf will be refused"
+    failed=1
   fi
   echo "hypervisor entitlement  ${entitled}"
+  return "${failed}"
 }
 
 if [[ ${CHECK} -eq 1 ]]; then
@@ -169,6 +184,7 @@ verify_patch() {
 }
 
 verify_patch "${VIRGL_PATCH}" "${VIRGL_PATCH_SHA256}"
+verify_patch "${DYNAMIC_DISPLAY_PATCH}" "${DYNAMIC_DISPLAY_PATCH_SHA256}"
 verify_patch "${FULL_GRAB_PATCH}" "${FULL_GRAB_PATCH_SHA256}"
 verify_patch "${COMMAND_SPACE_PATCH}" "${COMMAND_SPACE_PATCH_SHA256}"
 
@@ -196,6 +212,8 @@ if [[ ! -d ${TREE} ]]; then
   echo "==> Applying $(basename "${VIRGL_PATCH}")"
   # --forward makes a re-run a no-op rather than an offer to reverse the patch.
   patch -p1 -d "${TREE}" --batch --forward < "${VIRGL_PATCH}"
+  echo "==> Applying $(basename "${DYNAMIC_DISPLAY_PATCH}")"
+  patch -p1 -d "${TREE}" --batch --forward < "${DYNAMIC_DISPLAY_PATCH}"
   echo "==> Applying $(basename "${FULL_GRAB_PATCH}")"
   patch -p1 -d "${TREE}" --batch --forward < "${FULL_GRAB_PATCH}"
   echo "==> Applying $(basename "${COMMAND_SPACE_PATCH}")"

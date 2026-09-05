@@ -44,6 +44,13 @@ in
     refuses a GL context
   '';
 
+  options.bento.desktop.dynamicDisplay = lib.mkEnableOption ''
+    the patched QEMU Cocoa display pipeline used by the Bento VM. It publishes the
+    host window's backing-pixel geometry and density through virtio-gpu EDID, so the
+    desktop starts its display synchronizer and hides the guest-rendered cursor in
+    favor of Cocoa's host-composited cursor
+  '';
+
   config = {
     programs.hyprland.enable = true;
 

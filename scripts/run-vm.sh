@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # bento — boot artifacts/bento.qcow2 in QEMU on the Apple Silicon host.
 #
-#   open /Applications/Bento.app       # normal Cocoa-window launch; no privacy grant needed
-#   ./scripts/run-vm.sh                # developer path; same capture with the patched QEMU
+#   open /Applications/Bento.app       # immersive full screen; no privacy grant needed
+#   ./scripts/run-vm.sh                # developer path; immersive full screen by default
+#   ./scripts/run-vm.sh --windowed     # centered 16:9 window, about 75% of the Mac display
 #   ./scripts/run-vm.sh --headless     # no window; serial console only (what agents use)
 #   ./scripts/run-vm.sh --no-gl        # force software rendering (stock Homebrew QEMU)
 #   ./scripts/run-vm.sh --no-grab      # let macOS keep Cmd+Space and the other system combos
@@ -14,6 +15,12 @@
 #
 # Once up:  ssh -p 2222 chime@localhost
 # To quit:  `poweroff` in the guest, or Ctrl-A X at the serial console.
+#
+# Graphical launches publish the Cocoa window's live backing-pixel geometry through
+# virtio-gpu EDID. Hyprland follows that geometry and chooses scale 1, 1.5, or 2 from its
+# density. Retina-sharp resizing requires Bento's patched GL QEMU; stock QEMU remains a
+# bootable software fallback. `--windowed` starts at a centered 16:9 frame occupying about
+# 75% of the usable Mac display; the default enters native macOS full screen.
 #
 # The window captures Cmd+Space, so it opens the guest's launcher instead of Spotlight.
 # That behavior is enabled by `full-grab=on` and two small ui/cocoa.m patches:
@@ -73,9 +80,9 @@ VARS="${ARTIFACTS}/edk2-aarch64-vars.fd"
 CODE="/opt/homebrew/share/qemu/edk2-aarch64-code.fd"
 QMP_SOCK="${ARTIFACTS}/qmp.sock"
 
-# virtio-gpu's own default is 1280x800, and with edid=on (the default) that is what the
-# guest's EDID advertises and what Hyprland picks as the preferred mode. 1080p is a
-# friendlier desktop; there is no cost, since nothing is being scanned out by hardware.
+# Bootstrap geometry before Cocoa publishes its live backing size. The dynamic-display
+# patch replaces this preferred EDID timing as soon as the window exists; stock QEMU and
+# headless mode retain the readable 1080p fallback.
 GPU_XRES="1920"
 GPU_YRES="1080"
 
@@ -83,6 +90,7 @@ MEMORY="8G"
 CPUS="4"
 SSH_PORT="2222"
 HEADLESS=0
+WINDOWED=0
 RESET_VARS=0
 # Capture system key combos so Super+X reaches Hyprland instead of macOS. Default on: the
 # guest is a desktop whose whole keymap hangs off Super, and Cmd+Space is Spotlight's.
@@ -97,11 +105,13 @@ GL_EXPLICIT=0
 # the developer installation produced by build-qemu-gl.sh.
 GL_QEMU="${BENTO_QEMU:-${HOME}/.local/state/bento/qemu-gl/bin/qemu-system-aarch64}"
 QEMU_DATA="${BENTO_QEMU_DATA:-}"
-QEMU="qemu-system-aarch64"
+SOFTWARE_QEMU="${BENTO_SOFTWARE_QEMU:-qemu-system-aarch64}"
+QEMU="${SOFTWARE_QEMU}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --headless) HEADLESS=1; shift ;;
+    --windowed) WINDOWED=1; shift ;;
     --gl) GL=1; GL_EXPLICIT=1; shift ;;
     --no-gl|--software) GL=0; GL_EXPLICIT=1; shift ;;
     --no-grab) GRAB=0; shift ;;
@@ -114,6 +124,11 @@ while [[ $# -gt 0 ]]; do
     *) echo "error: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+if [[ ${HEADLESS} -eq 1 && ${WINDOWED} -eq 1 ]]; then
+  echo "error: --headless and --windowed are mutually exclusive" >&2
+  exit 2
+fi
 
 if [[ ! -f ${DISK} ]]; then
   echo "error: ${DISK} not found — build it first:  ./scripts/build-image.sh" >&2
@@ -145,17 +160,27 @@ elif [[ ${GL} -eq 1 && ! -x ${GL_QEMU} ]]; then
   exit 1
 fi
 
-gpu_device="virtio-gpu-pci,xres=${GPU_XRES},yres=${GPU_YRES}"
+gpu_device="virtio-gpu-pci,max_outputs=1,xres=${GPU_XRES},yres=${GPU_YRES}"
 cocoa_opts="cocoa"
 
 if [[ ${GL} -eq 1 ]]; then
   QEMU="${GL_QEMU}"
-  gpu_device="virtio-gpu-gl-pci,xres=${GPU_XRES},yres=${GPU_YRES}"
+  gpu_device="virtio-gpu-gl-pci,max_outputs=1,xres=${GPU_XRES},yres=${GPU_YRES}"
   # gl=es, not gl=on: ANGLE implements GL ES over Metal. macOS's own OpenGL stops at
   # 4.1 and virglrenderer wants more than that, which is why ANGLE is in the picture
   # at all (learned/phase-6.md §1).
   cocoa_opts+=",gl=es"
 fi
+
+# Cocoa draws this cursor outside the guest scanout, while Hyprland hides its own copy.
+# zoom-to-fit keeps the QEMU view and the live EDID geometry together during resizes.
+cocoa_opts+=",show-cursor=on,zoom-to-fit=on"
+if [[ ${WINDOWED} -eq 1 ]]; then
+  cocoa_opts+=",full-screen=off"
+else
+  cocoa_opts+=",full-screen=on"
+fi
+cocoa_opts+=",swap-opt-cmd=off"
 
 if [[ ${GRAB} -eq 1 ]]; then
   # full-grab is a base DisplayCocoa option present in both QEMUs. The local GL build adds
@@ -177,8 +202,8 @@ if [[ ${HEADLESS} -eq 1 ]]; then
     exit 2
   fi
   GL=0
-  QEMU="qemu-system-aarch64"
-  gpu_device="virtio-gpu-pci,xres=${GPU_XRES},yres=${GPU_YRES}"
+  QEMU="${SOFTWARE_QEMU}"
+  gpu_device="virtio-gpu-pci,max_outputs=1,xres=${GPU_XRES},yres=${GPU_YRES}"
   display_args=(-display none)
 fi
 
@@ -192,6 +217,13 @@ else
   echo "    software rendering: ${gpu_device%%,*}"
 fi
 if [[ ${HEADLESS} -eq 0 ]]; then
+  if [[ ${GL} -eq 0 ]]; then
+    echo "    display: 1920x1080 software fallback (live Retina resizing unavailable)"
+  elif [[ ${WINDOWED} -eq 1 ]]; then
+    echo "    display: dynamic Retina geometry in a centered 16:9 window"
+  else
+    echo "    display: dynamic Retina geometry in immersive full screen"
+  fi
   if [[ ${GRAB} -eq 1 ]]; then
     if [[ ${GL} -eq 1 ]]; then
       echo "    keyboard: Cmd is Super; Cmd+Space uses Bento's focus-scoped Carbon bridge"
@@ -213,7 +245,7 @@ if [[ -n ${QEMU_DATA} ]]; then
 fi
 
 exec "${QEMU}" \
-  "${qemu_data_args[@]}" \
+  ${qemu_data_args[@]+"${qemu_data_args[@]}"} \
   -name bento \
   -machine virt,accel=hvf \
   -cpu host \

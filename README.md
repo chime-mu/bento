@@ -80,17 +80,19 @@ sudo ./scripts/setup-linux-builder.sh
 ./scripts/start-linux-builder.sh   # 1. the builder VM (needed only to build the image)
 ./scripts/build-image.sh           # 2. build the qcow2, stage a 60 G writable copy
 ./scripts/build-macos-app.sh --install # 3. build and install /Applications/Bento.app
-open /Applications/Bento.app       # 4. boot it — Cocoa window, no terminal permission
+open /Applications/Bento.app       # 4. boot it — immersive full screen, no permission prompt
 ssh -p 2222 chime@localhost        # 5. log in
 ```
 
 No Accessibility or Input Monitoring permission is required. The app contains Bento's
-patched QEMU and launches this checkout's `scripts/run-vm.sh`; the VM disk remains at
-`artifacts/bento.qcow2`. Its serial output and Command-Space capture trace are appended to
-`artifacts/bento-app.log`.
+patched QEMU and launches this checkout's `scripts/run-vm.sh` in immersive macOS full
+screen; the VM disk remains at `artifacts/bento.qcow2`. Its serial output and Command-Space
+capture trace are appended to `artifacts/bento-app.log`.
 
 `./scripts/run-vm.sh` remains the developer/headless entry point. A direct windowed launch
-also gets the Carbon bridge when it selects the patched GL QEMU, but Bento.app is the
+is available as `./scripts/run-vm.sh --windowed`; it starts with a centered 16:9 frame at
+about 75% of the Mac display's usable area and still gets the Carbon bridge. With no
+presentation option, both the script and Bento.app enter full screen. Bento.app is the
 normal interactive launcher because it carries a self-contained, known QEMU binary.
 
 `run-vm.sh --headless` drops the window and leaves only the serial console, which is how
@@ -116,6 +118,7 @@ normal state of this machine:
 ```bash
 ./scripts/build-qemu-gl.sh          # once — builds QEMU 10.1.2 into ~/.local/state/bento
 ./scripts/build-qemu-gl.sh --check  # what is installed, and is it entitled for hvf
+./scripts/run-vm.sh --windowed      # resizable centered window instead of full screen
 ./scripts/run-vm.sh --no-gl         # force software rendering instead
 ```
 
@@ -132,6 +135,16 @@ Two things to know before relying on it, both in `learned/phase-6.md`: **screens
 to be taken differently** (below), and this GPU is *faster but narrower* than software
 rendering — it offers no desktop GL core profile, which is why ghostty carries a
 `LIBGL_ALWAYS_SOFTWARE` wrapper scoped to that one binary.
+
+The same QEMU build also publishes the Cocoa view's live backing-pixel dimensions, refresh
+rate, and Retina density through virtio-gpu EDID. A guest service decodes the preferred
+timing and applies an explicit Hyprland modeline on each DRM hotplug change, selecting
+scale 2 above 200 PPI, 1.5 above 140 PPI, and 1 otherwise. Native Wayland applications use
+that output scale directly; Bento deliberately sets no global `GDK_SCALE` or
+`QT_SCALE_FACTOR`. Cocoa draws the single visible cursor at host latency while Hyprland's
+guest-rendered copy stays hidden. The stock `--no-gl` path remains bootable, but live
+Retina-sharp resizing is guaranteed only with Bento's patched QEMU; the guest pins the
+unpatched software path to a readable 1920x1080 scale-1 fallback.
 
 ## Seeing the screen without looking at it
 

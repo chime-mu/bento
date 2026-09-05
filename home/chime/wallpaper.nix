@@ -68,9 +68,9 @@ in
       # that would tie the configuration to the emulated hardware — the same reason
       # home/chime/hyprland.nix leaves `monitor` blank.
       #
-      # `fill` scales and crops to cover. The image is generated at exactly 1920×1080
-      # (scripts/make-wallpaper.py), which is what scripts/run-vm.sh asks virtio-gpu for,
-      # so today it is a no-op — and it stays correct if either number changes.
+      # `fill` scales and crops to cover. The source image is 1920×1080, while the live
+      # output follows Cocoa's backing geometry, so this remains correct through window
+      # resizes and Retina/fullscreen mode changes.
       ExecStart = "${lib.getExe pkgs.swaybg} --mode fill --image ${theme.wallpaper}";
       Restart = "on-failure";
     };
