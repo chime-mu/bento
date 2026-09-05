@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # bento — boot artifacts/bento.qcow2 in QEMU on the Apple Silicon host.
 #
-#   ./scripts/run-vm.sh                # Cocoa window + serial console on this terminal
+#   open /Applications/Bento.app       # normal Cocoa-window launch; no privacy grant needed
+#   ./scripts/run-vm.sh                # developer path; same capture with the patched QEMU
 #   ./scripts/run-vm.sh --headless     # no window; serial console only (what agents use)
 #   ./scripts/run-vm.sh --no-gl        # force software rendering (stock Homebrew QEMU)
 #   ./scripts/run-vm.sh --no-grab      # let macOS keep Cmd+Space and the other system combos
@@ -14,25 +15,22 @@
 # Once up:  ssh -p 2222 chime@localhost
 # To quit:  `poweroff` in the guest, or Ctrl-A X at the serial console.
 #
-# The window captures system key combinations, so Cmd+Space opens the guest's launcher
-# instead of Spotlight. That is `full-grab=on`, and it is worth knowing what it does before
-# it surprises you — all of the following is from ui/cocoa.m in the QEMU we build:
+# The window captures Cmd+Space, so it opens the guest's launcher instead of Spotlight.
+# That behavior is enabled by `full-grab=on` and two small ui/cocoa.m patches:
 #
 #   * The Mac's Command key is what reaches the guest as Super. Cocoa maps it that way by
 #     default (`swap_opt_cmd` is false), so Omarchy's Super+X scheme is Cmd+X here.
-#   * Command is only forwarded while the *mouse* is grabbed, and with usb-tablet that
-#     happens the moment the pointer enters the window (`mouseEntered:` -> `grabMouse`).
-#     Ctrl+Alt+G releases it, and so does clicking away — the window title says which.
-#   * `full-grab=on` adds a CGEventTap at the head of kCGHIDEventTap, ahead of macOS's own
-#     hotkey handling, and swallows the event when the mouse is grabbed. So Spotlight,
-#     Cmd+Tab and Cmd+Q go to the guest while you are in the window, and to macOS when you
-#     are not. Nothing is captured while another app has focus.
-#   * It needs Accessibility permission, granted to the *terminal application this script
-#     runs from* rather than to qemu — a CLI binary is attributed to whatever launched it.
-#     If it is missing, CGEventTapCreate returns NULL and QEMU prints one line:
-#     "Could not create event tap, system key combos will not be captured." It then runs
-#     perfectly normally, minus the grab, which is the one failure worth watching for.
-#     System Settings -> Privacy & Security -> Accessibility.
+#   * Bento patches full-grab so keyboard capture follows the key window rather than the
+#     mouse grab. Absolute usb-tablet mode releases the mouse grab as soon as its guest
+#     driver binds; without the patch, that unrelated transition leaks Cmd+Space to macOS.
+#   * Current macOS removes the Space event from Cmd+Space even from QEMU's HID event tap.
+#     Bento therefore disables Spotlight's symbolic hotkey only while its window is key,
+#     registers the chord with Carbon, and injects guest Super+Space when Carbon fires.
+#   * On focus loss or normal exit, Bento unregisters the Carbon hotkey and restores the
+#     prior Spotlight setting. This path does not need Accessibility or Input Monitoring.
+#   * Upstream's CGEventTap is still attempted for other system combinations. If macOS
+#     denies it, QEMU prints "Could not create event tap..." and continues; that warning
+#     does not affect Bento's dedicated Cmd+Space bridge.
 #
 # `--no-grab` turns it off. None of this touches vm-screenshot.sh: QMP `sendkey meta_l-spc`
 # is injected into the emulated keyboard and never goes near the host's.
@@ -95,7 +93,10 @@ GRAB=1
 GL="auto"
 GL_EXPLICIT=0
 
-GL_QEMU="${HOME}/.local/state/bento/qemu-gl/bin/qemu-system-aarch64"
+# Bento.app supplies its nested, product-signed copy here. Direct CLI launches keep using
+# the developer installation produced by build-qemu-gl.sh.
+GL_QEMU="${BENTO_QEMU:-${HOME}/.local/state/bento/qemu-gl/bin/qemu-system-aarch64}"
+QEMU_DATA="${BENTO_QEMU_DATA:-}"
 QEMU="qemu-system-aarch64"
 
 while [[ $# -gt 0 ]]; do
@@ -157,8 +158,9 @@ if [[ ${GL} -eq 1 ]]; then
 fi
 
 if [[ ${GRAB} -eq 1 ]]; then
-  # full-grab is a base-DisplayCocoa option, present in both QEMUs — it needs no patch and
-  # no GL. See the header for what it captures and why it can fail quietly.
+  # full-grab is a base DisplayCocoa option present in both QEMUs. The local GL build adds
+  # focus-scoped Command forwarding and the Carbon Cmd+Space bridge described above; stock
+  # Homebrew QEMU retains the upstream mouse-grab/event-tap behavior.
   cocoa_opts+=",full-grab=on"
 fi
 
@@ -191,9 +193,12 @@ else
 fi
 if [[ ${HEADLESS} -eq 0 ]]; then
   if [[ ${GRAB} -eq 1 ]]; then
-    echo "    keyboard: system combos captured — Cmd is Super, Ctrl-Alt-G releases the grab"
-    echo "              (a 'Could not create event tap' line below means macOS Accessibility"
-    echo "               is not granted to this terminal, and Cmd+Space is still Spotlight)"
+    if [[ ${GL} -eq 1 ]]; then
+      echo "    keyboard: Cmd is Super; Cmd+Space uses Bento's focus-scoped Carbon bridge"
+    else
+      echo "    keyboard: upstream full-grab requested — capture follows the mouse grab"
+    fi
+    echo "              (an event-tap warning affects other system chords, not Cmd+Space)"
   else
     echo "    keyboard: not grabbed — macOS keeps Cmd+Space and the other system combos"
   fi
@@ -202,7 +207,13 @@ echo "    serial console follows; Ctrl-A X to kill the VM"
 echo "    QMP on ${QMP_SOCK} (screendump, sendkey)"
 echo
 
+qemu_data_args=()
+if [[ -n ${QEMU_DATA} ]]; then
+  qemu_data_args=(-L "${QEMU_DATA}")
+fi
+
 exec "${QEMU}" \
+  "${qemu_data_args[@]}" \
   -name bento \
   -machine virt,accel=hvf \
   -cpu host \

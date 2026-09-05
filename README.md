@@ -39,7 +39,7 @@ v1 runs as a QEMU virtual machine on an Apple Silicon MacBook. Bare metal comes 
 | **[`learned/phase-4.md`](learned/phase-4.md)** | Measured findings from Phase 4 — why GTK 4 draws nothing without `GSK_RENDERER=cairo`, why hyprpaper segfaults on virtio-gpu, and why Nerd Font glyphs have to be written as codepoints. |
 | **[`learned/phase-5.md`](learned/phase-5.md)** | Measured findings from Phase 5 — why a launcher cannot see software a rebuild just installed, which Node builds from source, and why every nvim-treesitter guide now configures nothing. |
 | **[`learned/phase-6.md`](learned/phase-6.md)** | Measured findings from Phase 6 — how the guest reaches Metal, why screenshots silently come back black once it does, the one application GPU acceleration broke, and why the obvious benchmark answers backwards. |
-| **[`learned/keyboard-capture.md`](learned/keyboard-capture.md)** | Post-v1 — why Super+Space opened Spotlight instead of the launcher, which host key Super really is, and the permission that decides it. |
+| **[`learned/keyboard-capture.md`](learned/keyboard-capture.md)** | Post-v1 — why Super+Space opened Spotlight, the failed event-tap approaches, and the focus-scoped Carbon bridge that finally captures it. |
 
 ## Host setup
 
@@ -79,9 +79,19 @@ sudo ./scripts/setup-linux-builder.sh
 ```bash
 ./scripts/start-linux-builder.sh   # 1. the builder VM (needed only to build the image)
 ./scripts/build-image.sh           # 2. build the qcow2, stage a 60 G writable copy
-./scripts/run-vm.sh                # 3. boot it — Cocoa window + serial console
-ssh -p 2222 chime@localhost        # 4. log in
+./scripts/build-macos-app.sh --install # 3. build and install /Applications/Bento.app
+open /Applications/Bento.app       # 4. boot it — Cocoa window, no terminal permission
+ssh -p 2222 chime@localhost        # 5. log in
 ```
+
+No Accessibility or Input Monitoring permission is required. The app contains Bento's
+patched QEMU and launches this checkout's `scripts/run-vm.sh`; the VM disk remains at
+`artifacts/bento.qcow2`. Its serial output and Command-Space capture trace are appended to
+`artifacts/bento-app.log`.
+
+`./scripts/run-vm.sh` remains the developer/headless entry point. A direct windowed launch
+also gets the Carbon bridge when it selects the patched GL QEMU, but Bento.app is the
+normal interactive launcher because it carries a self-contained, known QEMU binary.
 
 `run-vm.sh --headless` drops the window and leaves only the serial console, which is how
 an agent drives it. It keeps the virtio-GPU either way — Hyprland needs a DRM device to
@@ -171,6 +181,7 @@ a LazyVim-flavoured **Neovim**, and **Claude Code**.
 
 | Key | Does |
 |---|---|
+| `Super+K` | searchable keybinding cheat sheet |
 | `Super+Return` | terminal (`ghostty`; `foot` stays installed as the fallback) |
 | `Super+B` | browser (`chromium`) |
 | `Super+Space` | launcher |
@@ -183,14 +194,20 @@ a LazyVim-flavoured **Neovim**, and **Claude Code**.
 | `Super+Shift+Q` | quit Hyprland, back to a text login |
 
 **Super is the Mac's Command key.** QEMU's Cocoa UI maps it that way, so the table above is
-Cmd+Return, Cmd+Space and so on. macOS would normally eat Cmd+Space for Spotlight before
-QEMU ever sees it, so `run-vm.sh` passes `full-grab=on`: while the pointer is inside the VM
-window, system combinations go to the guest instead of to macOS, and `Ctrl+Alt+G` (or
-clicking away) hands them back. That grab needs **Accessibility** permission — granted in
-System Settings to the terminal application you launch `run-vm.sh` from, not to `qemu`,
-because a command-line binary is attributed to whatever started it. Without it QEMU prints
-`Could not create event tap, system key combos will not be captured.` and boots anyway.
-`run-vm.sh --no-grab` turns the whole thing off.
+Cmd+K, Cmd+Return and so on. Bento's QEMU carries a small patch that keeps Command
+forwarding active whenever its window is focused, independently of the mouse grab that an
+absolute tablet enables and releases as the pointer moves. This makes ordinary chords such
+as **Cmd+K** reliable. Cmd+K opens Bento's searchable shortcut list. (`Ctrl+Alt+G` releases
+QEMU's mouse grab, not focused keyboard forwarding.)
+
+Cmd+Space needs a separate macOS path because Spotlight removes the Space event before
+QEMU's Cocoa input handling sees it. While Bento's window is focused and `full-grab=on`,
+the patched QEMU temporarily disables Spotlight's symbolic hotkey, registers Cmd+Space
+with Carbon, and injects guest Super+Space when Carbon fires. It unregisters the chord and
+restores Spotlight as soon as the window loses focus or QEMU exits. This path needs no
+Accessibility permission. `artifacts/bento-app.log` records both activation and every
+forwarded chord. `run-vm.sh --no-grab` disables it. The stock Homebrew QEMU selected by
+`--no-gl` has neither Bento patch and retains upstream behavior.
 
 Every colour on that desktop comes from `home/chime/theme/` — a palette, a set of *roles*
 that the configs actually read, and the ANSI 16 for terminals. Swapping themes later means

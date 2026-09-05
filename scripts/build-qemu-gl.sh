@@ -24,11 +24,16 @@
 #                       come from the startergo/qemu-virgl tap.
 #   2. libepoxy-angle — epoxy built against that ANGLE rather than the system GL, so
 #                       QEMU and virglrenderer resolve the same symbols.
-#   3. the patch      — scripts/patches/qemu-10.1-macos-virgl.patch, akihikodaki's
+#   3. the patches    — scripts/patches/qemu-10.1-macos-virgl.patch is akihikodaki's
 #                       macOS VirGL series. It decouples CONFIG_EGL from CONFIG_OPENGL
 #                       (macOS has GL but no EGL, and stock meson.build assumes that is
 #                       impossible), adds OpenGL to cocoa's framework list, and teaches
-#                       virtio-gpu to borrow virglrenderer's scanout texture.
+#                       virtio-gpu to borrow virglrenderer's scanout texture. The small
+#                       qemu-10.1-macos-full-grab-focus.patch keeps full-grab keyboard
+#                       capture active while the QEMU window is focused, independently
+#                       of an absolute pointing device's transient mouse-grab state.
+#                       qemu-10.1-macos-command-space-carbon.patch handles the macOS 26
+#                       case where WindowServer withholds Space even from a HID event tap.
 #
 # We build rather than pouring the tap's `qemu-virgl` bottle because that bottle links
 # libspice-server, and spice-server pulls gstreamer and ~60 further formulae onto the
@@ -51,15 +56,20 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE="${HOME}/.local/state/bento"
 SRC_DIR="${STATE}/qemu-gl-src"
 PREFIX="${STATE}/qemu-gl"
-PATCH="${REPO_ROOT}/scripts/patches/qemu-10.1-macos-virgl.patch"
+VIRGL_PATCH="${REPO_ROOT}/scripts/patches/qemu-10.1-macos-virgl.patch"
+FULL_GRAB_PATCH="${REPO_ROOT}/scripts/patches/qemu-10.1-macos-full-grab-focus.patch"
+COMMAND_SPACE_PATCH="${REPO_ROOT}/scripts/patches/qemu-10.1-macos-command-space-carbon.patch"
 
 QEMU_VERSION="10.1.2"
 QEMU_TARBALL="qemu-${QEMU_VERSION}.tar.xz"
 QEMU_URL="https://download.qemu.org/${QEMU_TARBALL}"
-# Both digests are pinned: the tarball because it comes off the network, and the patch
-# because it was fetched from a *branch* URL in the startergo tap, which can move.
+# The inputs are pinned: the tarball because it comes off the network, the VirGL patch
+# because it was fetched from a *branch* URL that can move, and Bento's local patch so a
+# source edit cannot silently diverge from the binary this script claims to build.
 QEMU_SHA256="9d75f331c1a5cb9b6eb8fd9f64f563ec2eab346c822cb97f8b35cd82d3f11479"
-PATCH_SHA256="d0da295f24ece630f82e685ffa571ce02f11d31f8311942bc0b50d1430f3323a"
+VIRGL_PATCH_SHA256="d0da295f24ece630f82e685ffa571ce02f11d31f8311942bc0b50d1430f3323a"
+FULL_GRAB_PATCH_SHA256="0a181f643579b48db3b0704eaaa5ec4ad2dee19d0cc1cd31c4d54dea659034e6"
+COMMAND_SPACE_PATCH_SHA256="35e5e596a6f913f32064256ba168545fb22dba6f38d3d02d086d24c3f25d1c23"
 
 BREW_PREFIX="$(brew --prefix)"
 EPOXY="${BREW_PREFIX}/opt/libepoxy-angle"
@@ -93,6 +103,16 @@ report() {
     echo "virtio-gpu-gl-pci  present"
   else
     echo "virtio-gpu-gl-pci  MISSING — the build did not pick up virglrenderer"
+  fi
+  if strings "${BINARY}" | grep -F 'isKeyboardCaptured' >/dev/null; then
+    echo "focused Cmd forward present"
+  else
+    echo "focused Cmd forward MISSING — ordinary Cmd chords follow the mouse grab"
+  fi
+  if strings "${BINARY}" | grep -F 'Bento Command-Space capture enabled' >/dev/null; then
+    echo "Carbon Cmd+Space bridge present"
+  else
+    echo "Carbon Cmd+Space bridge MISSING — Spotlight will keep the shortcut"
   fi
   # `-display help` prints the backend list, then a blank line and two paragraphs of
   # prose about suboptions. Stop at the blank line or the prose comes with it.
@@ -136,14 +156,21 @@ for tool in meson ninja pkg-config; do
   command -v "${tool}" >/dev/null || { echo "error: ${tool} not found — brew install meson ninja pkg-config" >&2; exit 1; }
 done
 
-if [[ ! -f ${PATCH} ]]; then
-  echo "error: patch missing: ${PATCH}" >&2
-  exit 1
-fi
-if [[ "$(shasum -a 256 "${PATCH}" | cut -d' ' -f1)" != "${PATCH_SHA256}" ]]; then
-  echo "error: ${PATCH} does not match its pinned sha256" >&2
-  exit 1
-fi
+verify_patch() {
+  local patch_path="$1" expected_sha256="$2"
+  if [[ ! -f ${patch_path} ]]; then
+    echo "error: patch missing: ${patch_path}" >&2
+    exit 1
+  fi
+  if [[ "$(shasum -a 256 "${patch_path}" | cut -d' ' -f1)" != "${expected_sha256}" ]]; then
+    echo "error: ${patch_path} does not match its pinned sha256" >&2
+    exit 1
+  fi
+}
+
+verify_patch "${VIRGL_PATCH}" "${VIRGL_PATCH_SHA256}"
+verify_patch "${FULL_GRAB_PATCH}" "${FULL_GRAB_PATCH_SHA256}"
+verify_patch "${COMMAND_SPACE_PATCH}" "${COMMAND_SPACE_PATCH_SHA256}"
 
 # ── source ────────────────────────────────────────────────────────────────────
 mkdir -p "${SRC_DIR}"
@@ -166,9 +193,13 @@ fi
 if [[ ! -d ${TREE} ]]; then
   echo "==> Unpacking"
   tar xf "${QEMU_TARBALL}"
-  echo "==> Applying $(basename "${PATCH}")"
+  echo "==> Applying $(basename "${VIRGL_PATCH}")"
   # --forward makes a re-run a no-op rather than an offer to reverse the patch.
-  patch -p1 -d "${TREE}" --batch --forward < "${PATCH}"
+  patch -p1 -d "${TREE}" --batch --forward < "${VIRGL_PATCH}"
+  echo "==> Applying $(basename "${FULL_GRAB_PATCH}")"
+  patch -p1 -d "${TREE}" --batch --forward < "${FULL_GRAB_PATCH}"
+  echo "==> Applying $(basename "${COMMAND_SPACE_PATCH}")"
+  patch -p1 -d "${TREE}" --batch --forward < "${COMMAND_SPACE_PATCH}"
 fi
 
 # ── configure + build ─────────────────────────────────────────────────────────

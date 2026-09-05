@@ -10,14 +10,14 @@ acceptance criterion in `PLAN-v1.md` is met.
 Two new pieces of work are requested, described in full below. Neither is in `PLAN-v1.md`
 — that plan is finished — so treat this file as their specification.
 
-> **Update, later the same day.** A third change was made before either of them was
-> started: `scripts/run-vm.sh` now passes `full-grab=on`, so Cmd+Space opens the guest's
-> launcher instead of Spotlight. **Both tasks below are still untouched.** Findings are in
-> `learned/keyboard-capture.md`, and two of them bear directly on Task 1 — full-screen
-> mode holds the Cocoa mouse grab for as long as it lasts, and the grab is what decides
-> whether the Command key reaches the guest at all. **One thing there is unverified**: the
-> macOS Accessibility permission it depends on had not been granted when the session ended,
-> so nobody has yet seen the grab work. Confirm it first and record the result.
+> **Update 2026-09-05.** `scripts/run-vm.sh` passes `full-grab=on`, and Bento's patched
+> QEMU now routes Cmd+Space through a focus-scoped Carbon hotkey. A standalone probe proved
+> that the earlier Accessibility/HID-event-tap diagnosis was wrong on this macOS release:
+> even an authorised HID tap saw Command but not Space, whereas Carbon received the chord
+> with no privacy permission after Spotlight hotkey 64 was temporarily disabled. Bento
+> restores Spotlight on focus loss and exit and logs each forwarded chord. Cmd+K remains
+> the keybinding-menu fallback. **Both tasks below are still untouched.** The full sequence
+> and superseded conclusions are in `learned/keyboard-capture.md`, especially §13.
 
 ## Paste this into the new session
 

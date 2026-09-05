@@ -9,6 +9,7 @@
 {
   lib,
   osConfig,
+  pkgs,
   ...
 }:
 let
@@ -35,6 +36,40 @@ let
       "$mod SHIFT, ${key}, movetoworkspace, ${ws}"
     ]
   ) (lib.range 0 9);
+
+  # A small, searchable equivalent of Omarchy's Super+K cheat sheet. Keep the contents
+  # here beside the binds they document: it is intentionally a curated overview rather
+  # than a parser for generated hyprland.conf. Walker's dmenu mode gives it the same UI as
+  # the launcher without making a selection perform an action.
+  keybindingsMenu = pkgs.writeShellApplication {
+    name = "bento-keybindings";
+    text = ''
+      exec ${lib.getExe pkgs.walker} \
+        --dmenu \
+        --nohints \
+        --hideqa \
+        --placeholder "Bento key bindings" <<'BINDINGS'
+      ⌘ K — Show key bindings
+      ⌘ Return — Open terminal
+      ⌘ B — Open browser
+      ⌘ Space — Open launcher
+      ⌘ W — Close window
+      ⌘ F — Toggle fullscreen
+      ⌘ V — Toggle floating
+      ⌘ J — Toggle split direction
+      ⌘ P — Toggle pseudo tiling
+      ⌘ ←/↑/↓/→ — Move focus
+      ⌘ Shift ←/↑/↓/→ — Swap windows
+      ⌘ 1…0 — Switch workspace
+      ⌘ Shift 1…0 — Move window to workspace
+      ⌘ Shift S — Save screenshot
+      ⌘ L — Lock
+      ⌘ Shift Q — End desktop session
+      ⌘ Left-drag — Move window
+      ⌘ Right-drag — Resize window
+      BINDINGS
+    '';
+  };
 in
 {
   wayland.windowManager.hyprland = {
@@ -142,6 +177,9 @@ in
       # deliberately absent rather than bound to a placeholder, so that a key which did
       # nothing meant "not built yet" instead of "broken".
       bind = [
+        # macOS does not reserve Command+K, which makes this cheat sheet reachable even
+        # on releases where Command+Space is consumed by Spotlight ahead of QEMU.
+        "$mod, K, exec, ${lib.getExe keybindingsMenu}"
         "$mod, RETURN, exec, $terminal"
         "$mod, B, exec, $browser"
         "$mod, SPACE, exec, $launcher"
@@ -188,5 +226,6 @@ in
   };
 
   # The screenshot bind writes here, and grim will not create the directory itself.
+  home.packages = [ keybindingsMenu ];
   home.file."Pictures/.keep".text = "";
 }
