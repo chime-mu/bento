@@ -23,7 +23,21 @@ let
   # installs Hyprland through `security.wrappers` with cap_sys_nice, which is what lets it
   # give itself SCHED_RR at startup. Launching ${pkgs.hyprland}/bin/Hyprland directly — as
   # most greetd examples do — silently drops that.
-  hyprland = "${config.security.wrapperDir}/Hyprland";
+  compositor = "${config.security.wrapperDir}/Hyprland";
+
+  # 0.56 prints "Hyprland was started without start-hyprland. This is strongly discouraged"
+  # across the top of the screen at every launch, and upstream's own `hyprland.desktop` now
+  # reads `Exec=…/bin/start-hyprland`. It is a watchdog parent: it hands the compositor a
+  # `--watchdog-fd` and stays in the foreground, so greetd still has one process to wait on.
+  #
+  # `--path` is what keeps the capability wrapper above in the picture. Without it
+  # start-hyprland resolves `Hyprland` with execvp, i.e. through whatever PATH greetd's
+  # session shell happens to have — the store binary, cap_sys_nice silently dropped, which
+  # is the exact failure the wrapper exists to prevent.
+  startHyprland = lib.getExe' config.programs.hyprland.package "start-hyprland";
+  hyprland = "${startHyprland} --path ${compositor}";
+
+  greeter = lib.getExe' pkgs.greetd "agreety";
 in
 {
   options.bento.desktop.softwareRendering = lib.mkEnableOption ''
@@ -92,6 +106,17 @@ in
     # The module's `restart` option defaults to false whenever `initial_session` is set, on
     # purpose: restarting greetd re-triggers the autologin, so a Hyprland that crashes at
     # startup would relaunch forever instead of leaving the failure visible.
+    #
+    # start-hyprland does relaunch the compositor after an *unclean* exit, one level below
+    # greetd, so that reasoning now only holds for the clean ones. `$mod SHIFT, Q` is clean
+    # and still lands on agreety's prompt; a segfault loop is what the watchdog is for, and
+    # its restart is visible in the journal rather than silent.
+    #
+    # greetd runs a session command through a shell — it wraps it in
+    # `[ -f /etc/profile ] && . /etc/profile; …; exec <command>` — so `initial_session`
+    # takes the arguments `hyprland` now carries without further ceremony. agreety does
+    # not: its `--cmd` is a single value (`Unrecognized option: 'path'` otherwise), so the
+    # greeter's copy has to reach it as one shell word, which is what the quoting is for.
     services.greetd = {
       enable = true;
       settings = {
@@ -99,7 +124,7 @@ in
           command = hyprland;
           user = "chime";
         };
-        default_session.command = "${lib.getExe' pkgs.greetd "agreety"} --cmd ${hyprland}";
+        default_session.command = "${greeter} --cmd ${lib.escapeShellArg hyprland}";
       };
     };
 

@@ -19,6 +19,26 @@ Two new pieces of work are requested, described in full below. Neither is in `PL
 > the keybinding-menu fallback. **Both tasks below are still untouched.** The full sequence
 > and superseded conclusions are in `learned/keyboard-capture.md`, especially §13.
 
+> **Update, 2026-09-06 — the reboot is done and it passed.** Hyprland is now configured in
+> **Lua**, not hyprlang, and greetd launches it through **`start-hyprland`**; both were
+> deprecation warnings printed across the top of the screen at every launch, and `.conf`
+> support goes away in Hyprland 0.57. The machine was rebuilt with `bento rebuild boot` and
+> rebooted **to prove greetd's autologin still lands in a desktop**, which is the one part
+> no offline check could cover. **It does** — generation 51, no failed units, empty
+> `configerrors`, 42 binds, `start-hyprland` the parent of `Hyprland --watchdog-fd 4`, and
+> no banner in a `grim` capture. Super+drag moves and resizes windows, and both new
+> `hyprctl eval` call sites answer `ok` against the live session. `learned/hyprland-lua.md`
+> **§7 is the result**; §6 is the checklist it answers, and the rest of that file is the
+> migration itself, including the two `hyprctl keyword` call sites that had to become
+> `hyprctl eval` (§3) and why upstream's own `{ mouse = true }` bind option does not exist
+> (§4). Also settled there: **`dkmac` loads** — `hyprctl devices` reports
+> `active=Danish (Apple)` — which closes one of the two open questions below.
+>
+> **Two halves still want a hand at the host**, because neither can be driven from inside
+> the guest: resize the QEMU window and confirm the guest scanout follows, and run
+> `scripts/vm-screenshot.sh --type …` once from the host. The guest side of both is
+> verified (§7 items 3 and 4). Nothing about the tasks below changed.
+
 > **Update, 2026-09-06.** **Task 2 is largely done, and Task 1 has moved without being
 > started.** Findings for both are in `learned/keyboard-layout.md`. The guest now has a
 > custom `dkmac` layout (`modules/xkb/dkmac`), because `dk(mac)` turned out to be a stub
@@ -26,9 +46,9 @@ Two new pieces of work are requested, described in full below. Neither is in `PL
 > scanout is **3840x2412** — not the 1920x1080 `scripts/run-vm.sh` asks for. That second
 > one bears directly on Task 1's open question: the guest **did** follow the host window,
 > so dynamic resize is no longer "unknown and the first thing to measure". Full-screen mode
-> itself is still untouched. **Two things are unresolved**: nobody has yet seen `dkmac`
-> load (the running session predates `XKB_CONFIG_ROOT` — confirm after the next login), and
-> the `--type` trap flagged in Task 2 below is now real rather than predicted.
+> itself is still untouched. **One thing is now resolved and one is not**: `dkmac` has been
+> seen to load (`learned/hyprland-lua.md` §7), and the `--type` trap flagged in Task 2 below
+> is real rather than predicted.
 
 ## Paste this into the new session
 

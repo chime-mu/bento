@@ -177,12 +177,21 @@ guest_hyprctl() {
         exec hyprctl $*"
 }
 
+# `eval`, not `keyword`: the guest's Hyprland is configured in Lua (home/chime/hyprland.nix),
+# and under the Lua config manager `hyprctl keyword` refuses with "keyword can't work with
+# non-legacy parsers. Use eval." Reading is unaffected — `getoption` still answers `str: …`
+# in both. The Lua goes over in single quotes because `guest_hyprctl` interpolates into a
+# remote shell command, where the parentheses would otherwise be syntax.
+set_guest_layout() {
+  guest_hyprctl "eval 'hl.config({ input = { kb_layout = \"$1\" } })'"
+}
+
 SAVED_LAYOUT=""
 restore_layout() {
   [[ -n ${SAVED_LAYOUT} ]] || return 0
   # Set the name back rather than `hyprctl reload`: reload would also discard any *other*
-  # runtime keyword a caller had set, which is not this function's business to undo.
-  guest_hyprctl "keyword input:kb_layout ${SAVED_LAYOUT}" >/dev/null 2>&1 || true
+  # runtime setting a caller had applied, which is not this function's business to undo.
+  set_guest_layout "${SAVED_LAYOUT}" >/dev/null 2>&1 || true
   SAVED_LAYOUT=""
 }
 
@@ -204,7 +213,7 @@ if [[ ${typing} -eq 1 && ${RAW_KEYS} -eq 0 ]]; then
   fi
   if [[ ${SAVED_LAYOUT} != "us" ]]; then
     trap restore_layout EXIT INT TERM
-    guest_hyprctl "keyword input:kb_layout us" >/dev/null
+    set_guest_layout us >/dev/null
   else
     SAVED_LAYOUT=""   # already US; nothing to put back
   fi

@@ -22,10 +22,14 @@ let
 
   # **The one place the terminal is named is home/chime/hyprland.nix**, and this reads it
   # back out of the evaluated configuration rather than repeating the string. A second
-  # literal would be a second thing to remember when `$terminal` changes, and the failure
+  # literal would be a second thing to remember when the terminal changes, and the failure
   # it produces is quiet: the launcher would keep working and just open the *other*
   # terminal.
-  terminal = config.wayland.windowManager.hyprland.settings."$terminal";
+  #
+  # `._var` because the Lua config spells what hyprlang called `$terminal` as a Lua local,
+  # which home-manager writes as `{ _var = "ghostty"; }` — the attribute is the variable's
+  # name and `_var` is its value.
+  terminal = config.wayland.windowManager.hyprland.settings.terminal._var;
 in
 {
   # **elephant indexes once, at startup, and nothing restarts it on a rebuild.**

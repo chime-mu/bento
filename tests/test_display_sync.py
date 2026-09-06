@@ -251,8 +251,9 @@ class DisplaySyncTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                "keyword monitor ,modeline 1236 5120 6400 6553 6912 2880 "
-                "2894 2908 2980 -hsync -vsync,auto,2"
+                'eval hl.monitor({ output = "", mode = "modeline 1236 5120 6400 '
+                '6553 6912 2880 2894 2908 2980 -hsync -vsync", position = "auto", '
+                'scale = "2" })'
             ],
         )
 
@@ -280,7 +281,9 @@ HOTPLUG=1
             self.run_sync("--from-stdin", environment=environment, input_text=events)
             calls = log.read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(calls), 2)
-        self.assertTrue(all(call.endswith(",auto,1") for call in calls))
+        self.assertTrue(
+            all(call.endswith('position = "auto", scale = "1" })') for call in calls)
+        )
 
     def test_recreates_udev_monitor_after_it_exits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -272,8 +272,17 @@ apply_preferred_modes() {
     # that cache; an explicit scale calculated from the fresh EDID avoids its
     # stale fullscreen dimensions. Keep the output field empty so Bento's
     # single catch-all monitor rule remains independent of Virtual-1.
-    rule=",$mode,auto,$scale"
-    if ! response=$(hyprctl keyword monitor "$rule" 2>&1); then
+    #
+    # `hyprctl eval`, not `hyprctl keyword`: home/chime/hyprland.nix writes a Lua
+    # config, and the two are mutually exclusive — `keyword` answers "keyword
+    # can't work with non-legacy parsers. Use eval." under the Lua config manager,
+    # and `eval` is refused under the legacy one. The reply is the same either
+    # way: `ok`, or `error: …` with a non-zero exit.
+    #
+    # Neither $mode (a modeline or WxH@Hz) nor $scale (a number) can contain a
+    # quote, so interpolating them into the Lua source needs no escaping.
+    rule="hl.monitor({ output = \"\", mode = \"$mode\", position = \"auto\", scale = \"$scale\" })"
+    if ! response=$(hyprctl eval "$rule" 2>&1); then
       printf 'bento-display-sync: failed to apply %s to %s: %s\n' \
         "$mode" "$output" "$response" >&2
     elif [[ $response != ok ]]; then
