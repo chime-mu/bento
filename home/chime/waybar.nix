@@ -5,10 +5,9 @@
 # has pushed WAYLAND_DISPLAY and HYPRLAND_INSTANCE_SIGNATURE into the systemd and D-Bus
 # user environments. An `exec-once` races that import; a unit cannot.
 #
-# Module choice is shaped by the machine. There is no battery, no backlight and no audio
-# device behind this QEMU guest, so the modules that would report on them are absent
-# rather than present-and-empty — a bar that shows "0%" for a battery that does not exist
-# is worse than one that does not mention batteries.
+# Module choice is shaped by the machine. There is no battery or backlight behind this
+# QEMU guest, so those modules stay absent rather than present-and-empty. Audio is the
+# exception: Bento mirrors the Mac endpoints behind its emulated HDA transport.
 { ... }:
 let
   theme = import ./theme;
@@ -38,6 +37,7 @@ in
         "cpu"
         "memory"
         "network"
+        "pulseaudio"
         "tray"
       ];
 
@@ -85,6 +85,19 @@ in
         tooltip-format = "{ipaddr}/{cidr} via {gwaddr}";
       };
 
+      pulseaudio = {
+        format = "{icon} {volume}%";
+        format-muted = "󰝟 muted";
+        format-source = "󰍬 {volume}%";
+        format-source-muted = "󰍭 muted";
+        format-icons.default = [ "󰕿" "󰖀" "󰕾" ];
+        on-click = "pavucontrol";
+        on-scroll-up = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+";
+        on-scroll-down = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-";
+        on-click-right = "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle";
+        tooltip-format = "{desc}\nRight-click toggles microphone mute";
+      };
+
       tray = {
         spacing = 10;
         icon-size = 16;
@@ -117,6 +130,7 @@ in
       #cpu,
       #memory,
       #network,
+      #pulseaudio,
       #tray {
         padding: 0 12px;
         color: ${colors.css.foregroundDim};
@@ -174,6 +188,14 @@ in
 
       #network.disconnected {
         color: ${colors.css.error};
+      }
+
+      #pulseaudio {
+        color: ${colors.css.accent};
+      }
+
+      #pulseaudio.muted {
+        color: ${colors.css.muted};
       }
 
       /* The bar's own right edge. `#tray` collapses to nothing when the tray is empty,

@@ -36,11 +36,15 @@ if [[ ${1:-} == --version ]]; then
   exit 0
 fi
 if [[ ${1:-} == -device && ${2:-} == help ]]; then
-  printf '%s\n' virtio-gpu-gl-pci virtio-gpu-pci virtio-serial-pci virtio-9p-pci
+  printf '%s\n' virtio-gpu-gl-pci virtio-gpu-pci virtio-serial-pci virtserialport virtio-9p-pci intel-hda hda-micro
   exit 0
 fi
 if [[ ${1:-} == -fsdev && ${2:-} == local,help ]]; then
   printf '%s\n' 'uid=<num>' 'gid=<num>'
+  exit 0
+fi
+if [[ " $* " == *" -audiodev help "* ]]; then
+  printf '%s\n' sdl
   exit 0
 fi
 printf '%s\n' "$@" > "$BENTO_TEST_ARGUMENTS"
@@ -113,11 +117,28 @@ while :; do sleep 0.1; done
         self.assertIn("virtio-net-pci,netdev=bento-net,romfile=", arguments)
         self.assertIn("virtio-blk-pci,drive=bento-disk,bootindex=1,romfile=", arguments)
         self.assertIn("strict=on", arguments)
-        self.assertIn("virtio-serial-pci,romfile=", arguments)
-        self.assertIn("virtserialport,chardev=bento-clipboard,name=dev.bento.clipboard", arguments)
+        self.assertIn("virtio-serial-pci,id=bento-integrations,romfile=", arguments)
+        self.assertIn(
+            "virtserialport,bus=bento-integrations.0,nr=1,chardev=bento-audio-bridge,name=dev.bento.audio",
+            arguments,
+        )
+        self.assertIn(
+            "virtserialport,bus=bento-integrations.0,nr=2,chardev=bento-clipboard,name=dev.bento.clipboard",
+            arguments,
+        )
+        self.assertEqual(
+            sum(value.startswith("virtio-serial-pci") for value in arguments), 1
+        )
+        self.assertIn("sdl,id=bento-audio", arguments)
+        self.assertIn("intel-hda,id=bento-hda,romfile=", arguments)
+        self.assertIn("hda-micro,bus=bento-hda.0,audiodev=bento-audio", arguments)
         self.assertIn("virtio-gpu-gl-pci,max_outputs=1,xres=1920,yres=1080", arguments)
         self.assertEqual(descriptor["gpu"], "virgl")
+        self.assertEqual(descriptor["version"], 2)
+        self.assertTrue(descriptor["audio"])
         runtime = Path(descriptor["qmp"]).parent
+        self.assertEqual(Path(descriptor["audioSocket"]).parent, runtime)
+        self.assertEqual(Path(descriptor["audioRoutes"]).parent, runtime)
         self.assertEqual(stat.S_IMODE(self.artifacts.stat().st_mode), 0o700)
         self.assertEqual(stat.S_IMODE(runtime.stat().st_mode), 0o700)
         self.assertEqual(stat.S_IMODE((self.artifacts / "runtime.json").stat().st_mode), 0o600)
@@ -157,10 +178,44 @@ while :; do sleep 0.1; done
         self.assertIn("virtio-9p-pci,fsdev=bento-mac,mount_tag=bento-mac,romfile=", arguments)
         self.stop(process)
 
-    def test_no_share_and_no_clipboard_add_no_integration_devices(self):
-        process, arguments, _ = self.start("--no-share", "--no-clipboard")
+    def test_no_share_clipboard_or_audio_adds_no_integration_devices(self):
+        process, arguments, descriptor = self.start(
+            "--no-share", "--no-clipboard", "--no-audio"
+        )
         self.assertFalse(any("bento-mac" in value or "bento-clipboard" in value for value in arguments))
+        self.assertFalse(any("bento-audio" in value or "intel-hda" in value for value in arguments))
+        self.assertFalse(any(value.startswith("virtio-serial-pci") for value in arguments))
+        self.assertFalse(descriptor["audio"])
         self.stop(process)
+
+    def test_audio_defaults_overrides_and_conflicts(self):
+        cases = [
+            ([], True),
+            (["--windowed"], True),
+            (["--headless"], False),
+            (["--headless", "--audio"], True),
+            (["--no-audio"], False),
+        ]
+        for launch_arguments, enabled in cases:
+            with self.subTest(arguments=launch_arguments):
+                self.ready.unlink(missing_ok=True)
+                self.arguments.unlink(missing_ok=True)
+                process, arguments, descriptor = self.start(
+                    *launch_arguments, "--no-clipboard"
+                )
+                self.assertEqual(descriptor["audio"], enabled)
+                self.assertEqual("sdl,id=bento-audio" in arguments, enabled)
+                self.stop(process)
+
+        result = subprocess.run(
+            [str(RUN_VM), "--audio", "--no-audio"],
+            cwd=REPOSITORY,
+            env=self.environment,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("mutually exclusive", result.stderr)
 
     def test_invalid_ports_and_paths_are_rejected(self):
         for arguments in (
@@ -195,10 +250,28 @@ while :; do sleep 0.1; done
         self.assertEqual(result.returncode, 2)
         self.assertIn("symbolic links", result.stderr)
 
+    def test_refused_second_launch_preserves_running_vm_descriptor(self):
+        descriptor = self.artifacts / "runtime.json"
+        original = '{"version":1,"pid":99,"qmp":"existing"}\n'
+        descriptor.write_text(original)
+        with (self.artifacts / "bento.qcow2").open("rb"):
+            result = subprocess.run(
+                [str(RUN_VM), "--headless"],
+                cwd=REPOSITORY,
+                env=self.environment,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("already running", result.stderr)
+        self.assertEqual(descriptor.read_text(), original)
+
     def test_stock_fallback_boots_but_rejects_share(self):
         environment = self.environment.copy()
         environment["BENTO_QEMU"] = str(self.root / "no-patched-qemu")
-        process, arguments, descriptor = self.start("--no-gl", "--no-clipboard", environment=environment)
+        process, arguments, descriptor = self.start(
+            "--no-gl", "--no-clipboard", "--no-audio", environment=environment
+        )
         self.assertEqual(descriptor["gpu"], "software")
         self.assertIn("virtio-gpu-pci,max_outputs=1,xres=1920,yres=1080", arguments)
         self.stop(process)
@@ -206,7 +279,7 @@ while :; do sleep 0.1; done
         shared = self.root / "share"
         shared.mkdir()
         result = subprocess.run(
-            [str(RUN_VM), "--share", str(shared), "--no-gl", "--no-clipboard"],
+            [str(RUN_VM), "--share", str(shared), "--no-gl", "--no-clipboard", "--no-audio"],
             cwd=REPOSITORY,
             env=environment,
             capture_output=True,
@@ -214,6 +287,15 @@ while :; do sleep 0.1; done
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("guest-owner-capable", result.stderr)
+
+    def test_audio_topology_marker_migrates_efi_vars(self):
+        old_profile = self.artifacts / "edk2-aarch64-vars.profile"
+        old_profile.write_text(
+            "qemu=QEMU emulator version 11.1.1 (Bento test)|machine=virt,accel=hvf,gic-version=3|gpu=virtio-gpu-gl-pci|topology=bento-20260905-v3\n"
+        )
+        process, _, _ = self.start("--no-clipboard")
+        self.assertIn("topology=bento-20260905-v4", old_profile.read_text())
+        self.stop(process)
 
     def test_bridge_is_restarted_and_stopped_with_qemu(self):
         bridge_count = self.root / "bridge-count"

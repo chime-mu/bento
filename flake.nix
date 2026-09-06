@@ -106,6 +106,18 @@
               touch "$out"
             '';
 
+          audio-agent = pkgs.runCommand "bento-audio-agent-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              export BENTO_AUDIO_AGENT=${./hosts/bento-vm/audio-agent.py}
+              export BENTO_AUDIO_MODULE=${./hosts/bento-vm/audio.nix}
+              export BENTO_WAYBAR_MODULE=${./home/chime/waybar.nix}
+              python3 ${./tests/test_audio_agent.py}
+              touch "$out"
+            '';
+
           mount-mac = pkgs.runCommand "bento-mount-mac-tests"
             {
               nativeBuildInputs = [

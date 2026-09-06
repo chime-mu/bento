@@ -10,8 +10,13 @@ xcrun swiftc \
   -target arm64-apple-macos13.0 \
   -module-cache-path "${BUILD_DIR}/module-cache" \
   -framework AppKit \
+  -framework AudioToolbox \
+  -framework CoreAudio \
   -framework CryptoKit \
   "${REPO_ROOT}/macos/BentoLauncherCore.swift" \
+  "${REPO_ROOT}/macos/AudioIntegration.swift" \
+  "${REPO_ROOT}/macos/QMPConnection.swift" \
+  "${REPO_ROOT}/macos/VMHostSleepController.swift" \
   "${REPO_ROOT}/macos/ClipboardBridgeCore.swift" \
   "${REPO_ROOT}/macos/tests/BentoCoreTests.swift" \
   -o "${BUILD_DIR}/BentoCoreTests"

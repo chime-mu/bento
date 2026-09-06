@@ -127,12 +127,120 @@ struct ShareSettings {
     }
 }
 
+struct ImmersivePreferences: Equatable {
+    let isEnabled: Bool
+    static let defaults = ImmersivePreferences(isEnabled: true)
+}
+
+/// One schema-versioned value avoids mistaking missing or future fields for a
+/// deliberate opt-out. Invalid values are read as the safe legacy default and
+/// deliberately left untouched for a newer Bento version to recover.
+struct ImmersivePreferenceStore {
+    static let key = "immersivePreferences"
+    static let schemaVersion = 1
+    let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func load() -> ImmersivePreferences {
+        guard let data = defaults.data(forKey: Self.key),
+              let payload = try? JSONDecoder().decode(Payload.self, from: data),
+              payload.schemaVersion == Self.schemaVersion else {
+            return .defaults
+        }
+        return ImmersivePreferences(isEnabled: payload.isEnabled)
+    }
+
+    func save(_ value: ImmersivePreferences) {
+        guard let data = try? JSONEncoder().encode(Payload(
+            schemaVersion: Self.schemaVersion,
+            isEnabled: value.isEnabled
+        )) else { return }
+        defaults.set(data, forKey: Self.key)
+    }
+
+    private struct Payload: Codable {
+        let schemaVersion: Int
+        let isEnabled: Bool
+    }
+}
+
+enum MicrophoneAuthorizationState: Equatable {
+    case authorized
+    case notDetermined
+    case denied
+    case restricted
+}
+
+enum MicrophonePresentationAction: Equatable {
+    case request
+    case openSettings
+}
+
+struct MicrophonePresentation: Equatable {
+    let detail: String
+    let granted: Bool
+    let actionTitle: String?
+    let action: MicrophonePresentationAction?
+
+    static func make(
+        state: MicrophoneAuthorizationState,
+        requestInFlight: Bool = false
+    ) -> MicrophonePresentation {
+        switch state {
+        case .authorized:
+            return .init(
+                detail: "Apps in Bento can record from your Mac microphone.",
+                granted: true,
+                actionTitle: nil,
+                action: nil
+            )
+        case .notDetermined:
+            return .init(
+                detail: "Optional. Speaker playback works without microphone access.",
+                granted: false,
+                actionTitle: requestInFlight ? "Waiting…" : "Allow",
+                action: .request
+            )
+        case .denied:
+            return .init(
+                detail: "Recording is off. Speaker playback will still work.",
+                granted: false,
+                actionTitle: "Open System Settings",
+                action: .openSettings
+            )
+        case .restricted:
+            return .init(
+                detail: "Recording is unavailable because of this Mac’s policy.",
+                granted: false,
+                actionTitle: nil,
+                action: nil
+            )
+        }
+    }
+}
+
+enum BentoLaunchArgumentPolicy {
+    /// Bento.app owns presentation. Direct run-vm.sh callers keep complete
+    /// control over the same command-line options.
+    static func normalizedForApp(_ source: [String], immersive: Bool) -> [String] {
+        let filtered = source.filter { $0 != "--windowed" }
+        guard !filtered.contains("--headless"), !immersive else { return filtered }
+        return filtered + ["--windowed"]
+    }
+}
+
 struct RuntimeDescriptor: Decodable {
     let version: Int
     let qmp: String
     let pid: Int32
     let sshPort: Int
     let gpu: String
+    let audio: Bool
+    let audioSocket: String?
+    let audioRoutes: String?
 
     static func load(from url: URL) throws -> RuntimeDescriptor {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
@@ -143,8 +251,9 @@ struct RuntimeDescriptor: Decodable {
             throw CocoaError(.fileReadNoPermission)
         }
         let value = try JSONDecoder().decode(RuntimeDescriptor.self, from: Data(contentsOf: url))
-        guard value.version == 1, (1...65535).contains(value.sshPort),
-              value.gpu == "virgl" || value.gpu == "software" else {
+        guard value.version == 2, (1...65535).contains(value.sshPort),
+              value.gpu == "virgl" || value.gpu == "software",
+              !value.audio || (value.audioSocket != nil && value.audioRoutes != nil) else {
             throw CocoaError(.fileReadCorruptFile)
         }
         return value

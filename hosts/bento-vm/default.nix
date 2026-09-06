@@ -8,6 +8,7 @@
   imports = [
     ./hardware.nix
     ./integration.nix
+    ./audio.nix
     ../../modules/core.nix
     ../../modules/bento-cli.nix
     ../../modules/desktop.nix

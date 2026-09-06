@@ -52,7 +52,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for tool in codesign ditto plutil xattr xcrun; do
+for tool in codesign ditto install_name_tool otool plutil xattr xcrun; do
   command -v "${tool}" >/dev/null 2>&1 || {
     echo "error: ${tool} is required" >&2
     exit 1
@@ -70,11 +70,17 @@ if [[ ! -f ${QEMU_DATA_SOURCE}/efi-virtio.rom ]]; then
 fi
 device_help="$("${QEMU_SOURCE}" -device help 2>/dev/null || true)"
 fsdev_help="$("${QEMU_SOURCE}" -fsdev local,help 2>&1 || true)"
+audio_help="$("${QEMU_SOURCE}" -machine virt -audiodev help 2>&1 || true)"
 png_link="$(otool -L "${QEMU_SOURCE}" | grep -i 'libpng' || true)"
+SDL2_LINK="$(otool -L "${QEMU_SOURCE}" | awk '/libSDL2-2\.0\.0\.dylib/ {print $1; exit}')"
+SDL2_SOURCE="${QEMU_PREFIX}/lib/libSDL2-2.0.0.dylib"
+SDL3_SOURCE="${QEMU_PREFIX}/lib/libSDL3.dylib"
 if [[ ${device_help} != *"virtio-serial-pci"* || ${device_help} != *"virtio-9p-pci"* \
       || ${fsdev_help} != *"uid=<num>"* || ${fsdev_help} != *"gid=<num>"* \
-      || -z ${png_link} ]]; then
-  echo "error: ${QEMU_SOURCE} lacks Bento's clipboard/9p/PNG support" >&2
+      || ${audio_help} != *"sdl"* \
+      || ${SDL2_LINK} != '@loader_path/../lib/libSDL2-2.0.0.dylib' \
+      || ! -f ${SDL2_SOURCE} || ! -f ${SDL3_SOURCE} || -z ${png_link} ]]; then
+  echo "error: ${QEMU_SOURCE} lacks Bento's clipboard/9p/PNG/SDL support" >&2
   echo "       rebuild it first: ./scripts/build-qemu-gl.sh --clean" >&2
   exit 1
 fi
@@ -89,15 +95,22 @@ STAGED_APP="${STAGE}/Bento.app"
 CONTENTS="${STAGED_APP}/Contents"
 QEMU="${CONTENTS}/Resources/runtime/bin/BentoQEMU"
 QEMU_DATA="${CONTENTS}/Resources/runtime/share/qemu"
+QEMU_LIB="${CONTENTS}/Resources/runtime/lib"
 BRIDGE="${CONTENTS}/Helpers/BentoClipboardBridge"
-mkdir -p "${CONTENTS}/MacOS" "${CONTENTS}/Helpers" "$(dirname -- "${QEMU}")" "${QEMU_DATA}"
+mkdir -p "${CONTENTS}/MacOS" "${CONTENTS}/Helpers" "$(dirname -- "${QEMU}")" "${QEMU_DATA}" "${QEMU_LIB}"
 
 xcrun swiftc \
   -O \
   -target arm64-apple-macos13.0 \
   -module-cache-path "${BUILD_DIR}/module-cache" \
   -framework AppKit \
+  -framework AVFoundation \
+  -framework AudioToolbox \
+  -framework CoreAudio \
   "${SOURCE_DIR}/BentoLauncherCore.swift" \
+  "${SOURCE_DIR}/AudioIntegration.swift" \
+  "${SOURCE_DIR}/QMPConnection.swift" \
+  "${SOURCE_DIR}/VMHostSleepController.swift" \
   "${SOURCE_DIR}/BentoLauncher.swift" \
   -o "${CONTENTS}/MacOS/BentoLauncher"
 
@@ -115,21 +128,41 @@ install -m 0644 "${SOURCE_DIR}/Info.plist" "${CONTENTS}/Info.plist"
 printf '%s\n' "${REPO_ROOT}" > "${CONTENTS}/Resources/repository-path"
 install -m 0755 "${QEMU_SOURCE}" "${QEMU}"
 install -m 0644 "${QEMU_DATA_SOURCE}/efi-virtio.rom" "${QEMU_DATA}/efi-virtio.rom"
+install -m 0755 "${SDL2_SOURCE}" "${QEMU_LIB}/libSDL2-2.0.0.dylib"
+install -m 0755 "${SDL3_SOURCE}" "${QEMU_LIB}/libSDL3.dylib"
 # QEMU's upstream install attaches a classic Mac resource fork before signing. It is not
 # needed here and would prevent the nested copy from being signed as part of Bento.app.
 xattr -c "${QEMU}"
+xattr -c "${QEMU_LIB}/libSDL2-2.0.0.dylib" "${QEMU_LIB}/libSDL3.dylib"
 
 SIGN_OPTIONS=(--force --sign "${SIGN_IDENTITY}")
 if [[ ${SIGN_IDENTITY} != - ]]; then
   SIGN_OPTIONS+=(--options runtime --timestamp)
 fi
+codesign "${SIGN_OPTIONS[@]}" "${QEMU_LIB}/libSDL3.dylib"
+codesign "${SIGN_OPTIONS[@]}" "${QEMU_LIB}/libSDL2-2.0.0.dylib"
 codesign "${SIGN_OPTIONS[@]}" --identifier dev.bento.vm \
   --entitlements "${SOURCE_DIR}/qemu-hvf.entitlements" "${QEMU}"
 codesign "${SIGN_OPTIONS[@]}" --identifier dev.bento.vm.clipboard "${BRIDGE}"
 codesign "${SIGN_OPTIONS[@]}" --identifier dev.bento.vm \
+  --entitlements "${SOURCE_DIR}/bento.entitlements" \
   "${CONTENTS}/MacOS/BentoLauncher"
-codesign "${SIGN_OPTIONS[@]}" --identifier dev.bento.vm "${STAGED_APP}"
+codesign "${SIGN_OPTIONS[@]}" --identifier dev.bento.vm \
+  --entitlements "${SOURCE_DIR}/bento.entitlements" "${STAGED_APP}"
 codesign --verify --deep --strict --verbose=2 "${STAGED_APP}"
+codesign --verify --strict --verbose=2 "${QEMU}"
+codesign --verify --strict --verbose=2 "${QEMU_LIB}/libSDL2-2.0.0.dylib"
+codesign --verify --strict --verbose=2 "${QEMU_LIB}/libSDL3.dylib"
+codesign -d --entitlements - "${QEMU}" 2>&1 \
+  | grep -q 'com.apple.security.hypervisor'
+codesign -d --entitlements - "${QEMU}" 2>&1 \
+  | grep -q 'com.apple.security.device.audio-input'
+codesign -d --entitlements - "${STAGED_APP}" 2>&1 \
+  | grep -q 'com.apple.security.device.audio-input'
+[[ -n $(plutil -extract NSMicrophoneUsageDescription raw "${CONTENTS}/Info.plist") ]] || {
+  echo "error: Bento.app has no microphone usage description" >&2
+  exit 1
+}
 
 rm -rf -- "${APP}"
 ditto "${STAGED_APP}" "${APP}"

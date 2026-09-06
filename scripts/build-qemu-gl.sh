@@ -42,15 +42,10 @@
 # host, plus upgrades of 20 unrelated ones. `--disable-spice` costs a compile and
 # nothing else: every remaining dependency was already installed for Homebrew's qemu.
 #
-# Code signing is not optional — but it is also not ours to do. macOS gates hardware
-# virtualization behind the com.apple.security.hypervisor entitlement, and without it
-# `-machine virt,accel=hvf` is refused. PLAN-v1 §6 and learned/phase-0.md §2 both expect
-# us to sign the binary; **QEMU signs itself**. `make install` runs
-# scripts/entitlement.sh with accel/hvf/entitlements.plist, so the step below is a check.
-#
-# Do not "fix" it into a real signing step. entitlement.sh also attaches pc-bios/qemu.rsrc
-# as a resource fork, and codesign refuses to re-sign a binary carrying one:
-# "resource fork, Finder information, or similar detritus not allowed".
+# Code signing is not optional. macOS gates hardware virtualization and microphone
+# capture behind entitlements. QEMU's install hook supplies only the former and also
+# attaches a classic resource fork, so the final stage clears that metadata and signs
+# the binary with Bento's entitlement superset.
 
 set -euo pipefail
 
@@ -64,8 +59,12 @@ DYNAMIC_DISPLAY_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-macos-dynamic-disp
 IMMERSIVE_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-macos-immersive-mode.patch"
 FULL_GRAB_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-macos-full-grab-focus.patch"
 COMMAND_SPACE_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-macos-command-space-carbon.patch"
+PAUSE_OWNERSHIP_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-macos-pause-ownership.patch"
+SDL_AUDIO_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-sdl-audio-routing.patch"
 STRCHRNUL_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-darwin-strchrnul-compat.patch"
 VIRTFS_OWNER_PATCH="${REPO_ROOT}/scripts/patches/qemu-11.1-virtfs-guest-owner.patch"
+PINNED_SDL="${REPO_ROOT}/scripts/pinned-sdl-runtime.sh"
+QEMU_ENTITLEMENTS="${REPO_ROOT}/macos/qemu-hvf.entitlements"
 
 QEMU_VERSION="11.1.1"
 QEMU_TARBALL="qemu-${QEMU_VERSION}.tar.xz"
@@ -96,6 +95,8 @@ DYNAMIC_DISPLAY_PATCH_SHA256="1ce59350b6b8e6842bc0c9ca34c97f54cb75e85e2d7b35e5b4
 IMMERSIVE_PATCH_SHA256="2462463932f7db0d659f754f7f9c182884564dbcd7d4b8e523f1b57f0bd9fe5b"
 FULL_GRAB_PATCH_SHA256="d94aaa7b8b8b97eb25a5ace2b3a1268985e1b16e4e6201847b926b8ee709dbfb"
 COMMAND_SPACE_PATCH_SHA256="9164887a716ed67ced68f13d39d67d73d18f50a612945f9cf8e5ecdb9b22a5ab"
+PAUSE_OWNERSHIP_PATCH_SHA256="f9dc49aa6498fb3819ec1fa82c0e504b81391c4033f33ab99aa439dff2560e53"
+SDL_AUDIO_PATCH_SHA256="85be95846d9365e9c06049af2f4a82f02d5c3101fedcd109cfa6f0a513659b2b"
 STRCHRNUL_PATCH_SHA256="ec1048dd0e8ebe53bf7e8a3bca9bf2f5f4336cd607d4cd077437470e9a32094a"
 VIRTFS_OWNER_PATCH_SHA256="9748b0c223f0bc8c649d8b7c5c5e574f94e91d5411f9606ef9159c3bb6cd631b"
 
@@ -104,6 +105,16 @@ EPOXY="${BREW_PREFIX}/opt/libepoxy-angle"
 VIRGL="${BREW_PREFIX}/opt/virglrenderer"
 ANGLE="${BREW_PREFIX}/opt/libangle"
 LIBPNG="${BREW_PREFIX}/opt/libpng"
+
+[[ -f ${PINNED_SDL} && ! -L ${PINNED_SDL} ]] || {
+  echo "error: pinned SDL manifest missing: ${PINNED_SDL}" >&2
+  exit 1
+}
+# shellcheck source=scripts/pinned-sdl-runtime.sh
+source "${PINNED_SDL}"
+SDL_DEPENDENCIES="${STATE}/sdl-runtime"
+SDL2="${SDL_DEPENDENCIES}/${BENTO_SDL2_ROOT}"
+SDL3="${SDL_DEPENDENCIES}/${BENTO_SDL3_ROOT}"
 
 BINARY="${PREFIX}/bin/qemu-system-aarch64"
 
@@ -125,7 +136,7 @@ report() {
     return 1
   fi
   echo "binary     ${BINARY}"
-  local device_help fsdev_help gl entitled hvf_probe version failed=0
+  local device_help fsdev_help gl entitled audio_entitled hvf_probe version runtime_library failed=0
   version="$("${BINARY}" --version | head -1)"
   if [[ ${version} == "QEMU emulator version ${QEMU_VERSION}"* ]]; then
     echo "version    ${version}"
@@ -150,6 +161,15 @@ report() {
   done
   if [[ ${failed} -eq 0 ]]; then
     echo "virtio input, serial, RNG, and 9p  present"
+  fi
+  local audio_help
+  audio_help="$("${BINARY}" -machine virt -audiodev help 2>&1 || true)"
+  if [[ ${audio_help} == "sdl" || ${audio_help} == *$'\nsdl\n'* \
+      || ${audio_help} == sdl$'\n'* || ${audio_help} == *$'\nsdl' ]]; then
+    echo "SDL duplex audio  present"
+  else
+    echo "SDL duplex audio  MISSING"
+    failed=1
   fi
   fsdev_help="$("${BINARY}" -fsdev local,help 2>&1 || true)"
   if [[ ${fsdev_help} == *"uid=<num>"* && ${fsdev_help} == *"gid=<num>"* ]]; then
@@ -188,6 +208,26 @@ report() {
     echo "Carbon Cmd+Space bridge MISSING — Spotlight will keep the shortcut"
     failed=1
   fi
+  if strings "${BINARY}" | grep -F 'BENTO_SDL_AUDIO_CONTROL_DIRECTORY' >/dev/null; then
+    echo "live SDL audio routing present"
+  else
+    echo "live SDL audio routing MISSING"
+    failed=1
+  fi
+  if otool -L "${BINARY}" | grep -F 'libSDL2-2.0.0.dylib' >/dev/null; then
+    echo "SDL2-compat runtime linked"
+  else
+    echo "SDL2-compat runtime MISSING"
+    failed=1
+  fi
+  for runtime_library in "${PREFIX}/lib/libSDL2-2.0.0.dylib" \
+                         "${PREFIX}/lib/libSDL3.dylib"; do
+    if [[ ! -f ${runtime_library} ]] \
+        || ! codesign --verify --strict "${runtime_library}" 2>/dev/null; then
+      echo "$(basename "${runtime_library}") signature  MISSING or invalid"
+      failed=1
+    fi
+  done
   # `-display help` prints the backend list, then a blank line and two paragraphs of
   # prose about suboptions. Stop at the blank line or the prose comes with it.
   echo "displays   $("${BINARY}" -display help 2>/dev/null |
@@ -199,6 +239,13 @@ report() {
     failed=1
   fi
   echo "hypervisor entitlement  ${entitled}"
+  if codesign -d --entitlements - "${BINARY}" 2>&1 | grep -q 'com.apple.security.device.audio-input'; then
+    audio_entitled="yes"
+  else
+    audio_entitled="NO — microphone capture will be refused"
+    failed=1
+  fi
+  echo "audio-input entitlement  ${audio_entitled}"
   if [[ ${entitled} == yes ]]; then
     hvf_probe="$(printf '{"execute":"qmp_capabilities"}\n{"execute":"quit"}\n' |
       "${BINARY}" -name bento-hvf-probe -machine virt,accel=hvf,gic-version=3 \
@@ -261,6 +308,8 @@ verify_patch "${DYNAMIC_DISPLAY_PATCH}" "${DYNAMIC_DISPLAY_PATCH_SHA256}"
 verify_patch "${IMMERSIVE_PATCH}" "${IMMERSIVE_PATCH_SHA256}"
 verify_patch "${FULL_GRAB_PATCH}" "${FULL_GRAB_PATCH_SHA256}"
 verify_patch "${COMMAND_SPACE_PATCH}" "${COMMAND_SPACE_PATCH_SHA256}"
+verify_patch "${PAUSE_OWNERSHIP_PATCH}" "${PAUSE_OWNERSHIP_PATCH_SHA256}"
+verify_patch "${SDL_AUDIO_PATCH}" "${SDL_AUDIO_PATCH_SHA256}"
 verify_patch "${STRCHRNUL_PATCH}" "${STRCHRNUL_PATCH_SHA256}"
 verify_patch "${VIRTFS_OWNER_PATCH}" "${VIRTFS_OWNER_PATCH_SHA256}"
 
@@ -292,8 +341,8 @@ if [[ ${CLEAN} -eq 1 ]]; then
   rm -rf "${TREE}"
 fi
 
-if [[ -d ${TREE} && ! -f ${TREE}/.bento-virtfs-owner-patch ]]; then
-  echo "error: the existing QEMU source predates Bento's 9p owner patch" >&2
+if [[ -d ${TREE} && ! -f ${TREE}/.bento-audio-sleep-patches ]]; then
+  echo "error: the existing QEMU source predates Bento's audio and sleep patches" >&2
   echo "       rebuild it with: ./scripts/build-qemu-gl.sh --clean" >&2
   exit 1
 fi
@@ -318,15 +367,31 @@ if [[ ! -d ${TREE} ]]; then
   patch -p1 -d "${TREE}" --batch --forward < "${FULL_GRAB_PATCH}"
   echo "==> Applying $(basename "${COMMAND_SPACE_PATCH}")"
   patch -p1 -d "${TREE}" --batch --forward < "${COMMAND_SPACE_PATCH}"
+  echo "==> Applying $(basename "${PAUSE_OWNERSHIP_PATCH}")"
+  patch -p1 -d "${TREE}" --batch --forward < "${PAUSE_OWNERSHIP_PATCH}"
+  echo "==> Applying $(basename "${SDL_AUDIO_PATCH}")"
+  patch -p1 -d "${TREE}" --batch --forward < "${SDL_AUDIO_PATCH}"
   echo "==> Applying $(basename "${STRCHRNUL_PATCH}")"
   patch -p1 -d "${TREE}" --batch --forward < "${STRCHRNUL_PATCH}"
   echo "==> Applying $(basename "${VIRTFS_OWNER_PATCH}")"
   patch -p1 -d "${TREE}" --batch --forward < "${VIRTFS_OWNER_PATCH}"
   touch "${TREE}/.bento-virtfs-owner-patch"
+  touch "${TREE}/.bento-audio-sleep-patches"
 fi
 
 # ── configure + build ─────────────────────────────────────────────────────────
-export PKG_CONFIG_PATH="${VIRGL}/lib/pkgconfig:${EPOXY}/lib/pkgconfig:${LIBPNG}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+bento_sdl_prepare "${SRC_DIR}" "${SDL_DEPENDENCIES}"
+# Homebrew's relocatable bottle keeps placeholders in this compatibility
+# package's pkg-config file. Resolve them only inside Bento's pinned copy.
+sed -i '' \
+  -e "s|^prefix=@@HOMEBREW_PREFIX@@$|prefix=${SDL2}|" \
+  -e "s|^libdir=@@HOMEBREW_PREFIX@@/lib$|libdir=${SDL2}/lib|" \
+  -e "s|^includedir=@@HOMEBREW_PREFIX@@/include$|includedir=${SDL2}/include|" \
+  "${SDL2}/lib/pkgconfig/sdl2-compat.pc"
+# sdl2-compat loads SDL3 by this exact @loader_path name.
+install -m 0755 "${SDL3}/lib/libSDL3.0.dylib" "${SDL2}/lib/libSDL3.dylib"
+export PKG_CONFIG_PATH="${VIRGL}/lib/pkgconfig:${EPOXY}/lib/pkgconfig:${LIBPNG}/lib/pkgconfig:${SDL2}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+export DYLD_LIBRARY_PATH="${SDL2}/lib:${SDL3}/lib:${DYLD_LIBRARY_PATH:-}"
 
 BUILD="${TREE}/build"
 mkdir -p "${BUILD}"
@@ -361,7 +426,8 @@ if [[ ! -f build.ninja ]]; then
     --enable-fdt=internal \
     --disable-spice \
     --disable-gtk \
-    --disable-sdl \
+    --enable-sdl \
+    --audio-drv-list=sdl \
     --disable-vnc \
     --disable-guest-agent \
     --disable-docs \
@@ -385,24 +451,43 @@ echo "==> Installing to ${PREFIX}"
 rm -rf "${PREFIX}"
 ninja install
 
+# Homebrew bottles carry placeholder install names that are normally rewritten by
+# Homebrew during installation. Bento deliberately uses checksum-pinned, private
+# copies instead, so make the installed QEMU runtime self-contained and relocatable.
+QEMU_RUNTIME_LIB="${PREFIX}/lib"
+QEMU_SDL2="${QEMU_RUNTIME_LIB}/libSDL2-2.0.0.dylib"
+QEMU_SDL3="${QEMU_RUNTIME_LIB}/libSDL3.dylib"
+mkdir -p "${QEMU_RUNTIME_LIB}"
+install -m 0755 "${SDL2}/lib/libSDL2-2.0.0.dylib" "${QEMU_SDL2}"
+install -m 0755 "${SDL2}/lib/libSDL3.dylib" "${QEMU_SDL3}"
+xattr -c "${QEMU_SDL2}" "${QEMU_SDL3}"
+install_name_tool -id '@loader_path/libSDL2-2.0.0.dylib' "${QEMU_SDL2}"
+install_name_tool -id '@loader_path/libSDL3.dylib' "${QEMU_SDL3}"
+SDL2_BUILD_LINK="$(otool -L "${BINARY}" | awk '/libSDL2-2\.0\.0\.dylib/ {print $1; exit}')"
+if [[ -z ${SDL2_BUILD_LINK} ]]; then
+  echo "error: installed QEMU has no SDL2-compat dependency" >&2
+  exit 1
+fi
+install_name_tool -change "${SDL2_BUILD_LINK}" \
+  '@loader_path/../lib/libSDL2-2.0.0.dylib' "${BINARY}"
+
 # ── code signing ──────────────────────────────────────────────────────────────
-# Without com.apple.security.hypervisor, `-machine virt,accel=hvf` is refused by the
-# kernel and the VM will not start. PLAN-v1 §6 and learned/phase-0.md §2 both flag this
-# as a step we would have to perform ourselves — we do not.
-#
-# QEMU signs itself. `make install` runs scripts/entitlement.sh, which ad-hoc signs the
-# binary with accel/hvf/entitlements.plist. So this is a *check*, not a signing step,
-# and re-signing here is actively wrong: entitlement.sh also attaches pc-bios/qemu.rsrc
-# as a resource fork, and a second `codesign --force` rejects it outright with
-# "resource fork, Finder information, or similar detritus not allowed".
-echo "==> Verifying the hvf entitlement"
-if codesign -d --entitlements - "${BINARY}" 2>&1 | grep -q 'com.apple.security.hypervisor'; then
-  echo "    ok — signed by QEMU's own entitlement.sh"
-else
-  echo "error: ${BINARY} has no com.apple.security.hypervisor entitlement." >&2
-  echo "       hvf will be refused. Sign it by hand with:" >&2
-  echo "         codesign --sign - --force \\" >&2
-  echo "           --entitlements ${TREE}/accel/hvf/entitlements.plist ${BINARY}" >&2
+# QEMU's install hook signs for HVF and attaches an obsolete resource fork.
+# Clear only that metadata, then replace the signature with Bento's superset:
+# hardware virtualization plus on-demand microphone capture.
+echo "==> Signing QEMU for HVF and optional microphone capture"
+xattr -c "${BINARY}"
+codesign --force --sign - "${QEMU_SDL3}"
+codesign --force --sign - "${QEMU_SDL2}"
+codesign --force --sign - --entitlements "${QEMU_ENTITLEMENTS}" "${BINARY}"
+if ! codesign -d --entitlements - "${BINARY}" 2>&1 \
+    | grep -q 'com.apple.security.hypervisor'; then
+  echo "error: ${BINARY} has no hypervisor entitlement" >&2
+  exit 1
+fi
+if ! codesign -d --entitlements - "${BINARY}" 2>&1 \
+    | grep -q 'com.apple.security.device.audio-input'; then
+  echo "error: ${BINARY} has no audio-input entitlement" >&2
   exit 1
 fi
 

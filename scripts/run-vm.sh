@@ -5,6 +5,8 @@
 #   ./scripts/run-vm.sh --windowed              # resizable Cocoa window
 #   ./scripts/run-vm.sh --headless              # no window; serial console only
 #   ./scripts/run-vm.sh --no-gl                 # software-rendered display
+#   ./scripts/run-vm.sh --audio                 # force host audio (including headless)
+#   ./scripts/run-vm.sh --no-audio              # disable speaker and microphone devices
 #   ./scripts/run-vm.sh --share /absolute/path  # read/write at ~/Mac in the guest
 #   ./scripts/run-vm.sh --no-clipboard          # disable automatic clipboard sharing
 #   ./scripts/run-vm.sh --memory 4G --cpus 2 --ssh-port 2222
@@ -23,6 +25,7 @@ VARS="${ARTIFACTS}/edk2-aarch64-vars.fd"
 VARS_PROFILE="${ARTIFACTS}/edk2-aarch64-vars.profile"
 CODE="${BENTO_EFI_CODE:-/opt/homebrew/share/qemu/edk2-aarch64-code.fd}"
 RUNTIME_DESCRIPTOR="${ARTIFACTS}/runtime.json"
+RUNTIME_DESCRIPTOR_OWNED=0
 VM_LOCK="${ARTIFACTS}/vm.lock"
 VM_LOCK_HELD=0
 RUNTIME_DIR=""
@@ -42,6 +45,8 @@ GRAB=1
 GL="auto"
 GL_EXPLICIT=0
 CLIPBOARD=1
+AUDIO=-1
+AUDIO_EXPLICIT=0
 SHARE_PATH=""
 
 PATCHED_QEMU="${BENTO_QEMU:-${HOME}/.local/state/bento/qemu-gl/bin/qemu-system-aarch64}"
@@ -66,6 +71,20 @@ while [[ $# -gt 0 ]]; do
     --reset-vars) RESET_VARS=1; shift ;;
     --clipboard) CLIPBOARD=1; shift ;;
     --no-clipboard) CLIPBOARD=0; shift ;;
+    --audio)
+      if [[ ${AUDIO_EXPLICIT} -eq 1 && ${AUDIO} -ne 1 ]]; then
+        echo "error: --audio and --no-audio are mutually exclusive" >&2
+        exit 2
+      fi
+      AUDIO=1; AUDIO_EXPLICIT=1; shift
+      ;;
+    --no-audio)
+      if [[ ${AUDIO_EXPLICIT} -eq 1 && ${AUDIO} -ne 0 ]]; then
+        echo "error: --audio and --no-audio are mutually exclusive" >&2
+        exit 2
+      fi
+      AUDIO=0; AUDIO_EXPLICIT=1; shift
+      ;;
     --share) SHARE_PATH="${2:?--share needs an absolute directory}"; shift 2 ;;
     --no-share) SHARE_PATH=""; shift ;;
     --memory) MEMORY="${2:?--memory needs an argument}"; shift 2 ;;
@@ -79,6 +98,9 @@ done
 if [[ ${HEADLESS} -eq 1 && ${WINDOWED} -eq 1 ]]; then
   echo "error: --headless and --windowed are mutually exclusive" >&2
   exit 2
+fi
+if [[ ${AUDIO} -eq -1 ]]; then
+  if [[ ${HEADLESS} -eq 1 ]]; then AUDIO=0; else AUDIO=1; fi
 fi
 if [[ ! ${SSH_PORT} =~ ^[0-9]+$ ]] \
     || (( 10#${SSH_PORT} < 1 || 10#${SSH_PORT} > 65535 )); then
@@ -196,10 +218,17 @@ cleanup() {
     kill "${QEMU_PID}" 2>/dev/null || true
     wait "${QEMU_PID}" 2>/dev/null || true
   fi
-  rm -f -- "${RUNTIME_DESCRIPTOR}"
+  if [[ ${RUNTIME_DESCRIPTOR_OWNED} -eq 1 ]]; then
+    rm -f -- "${RUNTIME_DESCRIPTOR}"
+  fi
   if [[ -n ${RUNTIME_DIR} && -d ${RUNTIME_DIR} ]]; then
-    rm -f -- "${RUNTIME_DIR}/qmp.sock" "${RUNTIME_DIR}/clipboard.sock"
+    rm -f -- "${RUNTIME_DIR}/qmp.sock" "${RUNTIME_DIR}/audio.sock" \
+      "${RUNTIME_DIR}/clipboard.sock"
     rm -f -- "${RUNTIME_DIR}/clipboard-bridge.pid"
+    if [[ -d ${RUNTIME_DIR}/audio-routes && ! -L ${RUNTIME_DIR}/audio-routes ]]; then
+      rm -f -- "${RUNTIME_DIR}/audio-routes/input" "${RUNTIME_DIR}/audio-routes/output"
+      rmdir -- "${RUNTIME_DIR}/audio-routes" 2>/dev/null || true
+    fi
     rmdir -- "${RUNTIME_DIR}" 2>/dev/null || true
   fi
   release_vm_lock
@@ -243,12 +272,16 @@ acquire_vm_lock() {
 }
 
 acquire_vm_lock
+RUNTIME_DESCRIPTOR_OWNED=1
 rm -f -- "${RUNTIME_DESCRIPTOR}"
 RUNTIME_DIR="$(mktemp -d "${ARTIFACTS}/runtime.XXXXXX")"
 chmod 0700 "${RUNTIME_DIR}"
 QMP_SOCK="${RUNTIME_DIR}/qmp.sock"
+AUDIO_SOCK="${RUNTIME_DIR}/audio.sock"
+AUDIO_ROUTE_DIR="${RUNTIME_DIR}/audio-routes"
 CLIPBOARD_SOCK="${RUNTIME_DIR}/clipboard.sock"
 BRIDGE_PID_FILE="${RUNTIME_DIR}/clipboard-bridge.pid"
+mkdir -m 0700 -- "${AUDIO_ROUTE_DIR}"
 
 if [[ -x ${PATCHED_QEMU} ]]; then
   QEMU="${PATCHED_QEMU}"
@@ -278,9 +311,24 @@ if [[ ${PATCHED_RUNTIME} -eq 1 && ${qemu_version} != "QEMU emulator version 11.1
 fi
 
 device_help="$("${QEMU}" -device help 2>/dev/null || true)"
-if [[ ${CLIPBOARD} -eq 1 && ${device_help} != *"virtio-serial-pci"* ]]; then
+if [[ ( ${CLIPBOARD} -eq 1 || ${AUDIO} -eq 1 ) && ${device_help} != *"virtio-serial-pci"* ]]; then
   echo "error: the selected QEMU runtime has no virtio-serial support" >&2
   exit 1
+fi
+if [[ ${AUDIO} -eq 1 ]]; then
+  audio_help="$("${QEMU}" -machine virt -audiodev help 2>&1 || true)"
+  if [[ ${audio_help} != "sdl" && ${audio_help} != *$'\nsdl\n'* \
+        && ${audio_help} != sdl$'\n'* && ${audio_help} != *$'\nsdl' ]]; then
+    echo "error: the selected QEMU runtime has no SDL audio backend" >&2
+    echo "       rebuild it first:  ./scripts/build-qemu-gl.sh --clean" >&2
+    exit 1
+  fi
+  for device in intel-hda hda-micro virtserialport; do
+    if [[ ${device_help} != *"${device}"* ]]; then
+      echo "error: the selected QEMU runtime has no ${device} audio support" >&2
+      exit 1
+    fi
+  done
 fi
 if [[ -n ${SHARE_PATH} ]]; then
   if [[ ${PATCHED_RUNTIME} -eq 0 ]]; then
@@ -327,7 +375,7 @@ if [[ ${PATCHED_RUNTIME} -eq 1 ]]; then machine+=",gic-version=3"; fi
 
 # The integration devices are appended after the boot disk, but the topology marker still
 # changes once so every existing EFI store is rediscovered under the QEMU 11.1 layout.
-efi_profile="qemu=${qemu_version}|machine=${machine}|gpu=${gpu_device%%,*}|topology=bento-20260905-v3"
+efi_profile="qemu=${qemu_version}|machine=${machine}|gpu=${gpu_device%%,*}|topology=bento-20260905-v4"
 saved_efi_profile=""
 if [[ -r ${VARS_PROFILE} ]]; then IFS= read -r saved_efi_profile < "${VARS_PROFILE}" || true; fi
 reset_vars_reason=""
@@ -349,11 +397,21 @@ fi
 qemu_data_args=()
 if [[ ${PATCHED_RUNTIME} -eq 1 && -n ${QEMU_DATA} ]]; then qemu_data_args=(-L "${QEMU_DATA}"); fi
 integration_args=()
+if [[ ${AUDIO} -eq 1 || ${CLIPBOARD} -eq 1 ]]; then
+  integration_args+=(
+    -device "virtio-serial-pci,id=bento-integrations,romfile="
+  )
+fi
+if [[ ${AUDIO} -eq 1 ]]; then
+  integration_args+=(
+    -chardev "socket,id=bento-audio-bridge,path=${AUDIO_SOCK},server=on,wait=off"
+    -device "virtserialport,bus=bento-integrations.0,nr=1,chardev=bento-audio-bridge,name=dev.bento.audio"
+  )
+fi
 if [[ ${CLIPBOARD} -eq 1 ]]; then
   integration_args+=(
-    -device "virtio-serial-pci,romfile="
     -chardev "socket,id=bento-clipboard,path=${CLIPBOARD_SOCK},server=on,wait=off"
-    -device "virtserialport,chardev=bento-clipboard,name=dev.bento.clipboard"
+    -device "virtserialport,bus=bento-integrations.0,nr=2,chardev=bento-clipboard,name=dev.bento.clipboard"
   )
 fi
 if [[ -n ${SHARE_PATH} ]]; then
@@ -374,8 +432,22 @@ else
 fi
 if [[ -n ${SHARE_PATH} ]]; then echo "    folder: ${SHARE_PATH} -> ~/Mac"; else echo "    folder: disabled"; fi
 if [[ ${CLIPBOARD} -eq 1 ]]; then echo "    clipboard: automatic text/PNG sharing"; else echo "    clipboard: disabled"; fi
+if [[ ${AUDIO} -eq 1 ]]; then echo "    audio: SDL speaker and microphone integration"; else echo "    audio: disabled"; fi
 echo "    serial console follows; Ctrl-A X to kill the VM"
 echo
+
+audio_args=()
+if [[ ${AUDIO} -eq 1 ]]; then
+  audio_args=(
+    -audiodev "sdl,id=bento-audio"
+    -device "intel-hda,id=bento-hda,romfile="
+    -device "hda-micro,bus=bento-hda.0,audiodev=bento-audio"
+  )
+  # SDL's legacy variable selects one process-wide device. Bento's patched
+  # backend instead receives independent input/output routes and live updates.
+  unset SDL_AUDIO_DEVICE_NAME
+  export BENTO_SDL_AUDIO_CONTROL_DIRECTORY="${AUDIO_ROUTE_DIR}"
+fi
 
 "${QEMU}" \
   ${qemu_data_args[@]+"${qemu_data_args[@]}"} \
@@ -398,21 +470,33 @@ echo
   -device virtio-tablet-pci,romfile= \
   -object rng-random,id=bento-rng,filename=/dev/urandom \
   -device virtio-rng-pci,rng=bento-rng \
+  ${audio_args[@]+"${audio_args[@]}"} \
   ${integration_args[@]+"${integration_args[@]}"} \
   -netdev "user,id=bento-net,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" \
   -device "virtio-net-pci,netdev=bento-net,romfile=" \
   -serial mon:stdio &
 QEMU_PID=$!
 
-/usr/bin/python3 - "${RUNTIME_DESCRIPTOR}" "${QMP_SOCK}" "${QEMU_PID}" "${SSH_PORT}" "${GPU_MODE}" <<'PY'
+/usr/bin/python3 - "${RUNTIME_DESCRIPTOR}" "${QMP_SOCK}" "${QEMU_PID}" "${SSH_PORT}" "${GPU_MODE}" "${AUDIO}" "${AUDIO_SOCK}" "${AUDIO_ROUTE_DIR}" <<'PY'
 import json
 import os
 import sys
 
-target, qmp, pid, port, gpu = sys.argv[1:]
+target, qmp, pid, port, gpu, audio_enabled, audio_socket, audio_routes = sys.argv[1:]
 temporary = target + ".tmp"
+descriptor = {
+    "version": 2,
+    "qmp": qmp,
+    "pid": int(pid),
+    "sshPort": int(port),
+    "gpu": gpu,
+    "audio": audio_enabled == "1",
+}
+if descriptor["audio"]:
+    descriptor["audioSocket"] = audio_socket
+    descriptor["audioRoutes"] = audio_routes
 with open(temporary, "w", encoding="utf-8") as stream:
-    json.dump({"version": 1, "qmp": qmp, "pid": int(pid), "sshPort": int(port), "gpu": gpu}, stream)
+    json.dump(descriptor, stream)
     stream.write("\n")
 os.chmod(temporary, 0o600)
 os.replace(temporary, target)
