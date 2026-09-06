@@ -162,10 +162,10 @@ well as Super, so it is no longer free now that Alt carries level 3.
 
 ## Still unmeasured
 
-**Whether `dkmac` actually loads has not been observed.** Everything above compiles and the
-layout is installed and registered, but the running Hyprland predates `XKB_CONFIG_ROOT` and
-still reports `us`. Confirm after the next login and record it — a fresh greetd session
-should supply the variable through PAM, but that path has not been exercised.
+**`dkmac` loads.** Observed 2026-09-06 in a greetd session after the reboot in
+`hyprland-lua.md` §7: `hyprctl devices` reports `layout=dkmac active=Danish (Apple)` on
+both `qemu-virtio-keyboard` and `power-button`, so PAM does supply `XKB_CONFIG_ROOT` to
+an autologin session. This was the open question here and it is closed.
 
 **The rest of the Apple-vs-PC differences are unenumerated.** `@` was found by using the
 machine; §1 means there are almost certainly more. They go into `modules/xkb/dkmac` one key
@@ -174,3 +174,41 @@ at a time, tested with §4's one-liner.
 **The TTY is still US.** `console.keyMap` is unset, so tty1 and `agreety` — the login prompt
 in `modules/desktop.nix` — do not follow the compositor. It matters only when Hyprland has
 failed to start, which is exactly when a password has to be typed.
+
+## Three more keys, found on the hardware (2026-09-06)
+
+Reported by pressing the key and naming the wanted symbol, which is a reliable way to
+specify them: the character a key produces *now* names it unambiguously, because only one
+key in the layout produces any given symbol at any given level.
+
+| xkb key | where it is | was | is now |
+|---|---|---|---|
+| `<TLDE>` | left of `1` | `½ § ¾ ¶` | `< > ¾ ¶` |
+| `<LSGT>` | left of `Z` | `< > \ ¬` | `$ § \ ¬` |
+| `<AE04>` | the `4` | `4 ¤ $ ¼` | `4 € $ ¼` |
+
+The first two are a swap of levels 1–2 between two keys that a PC Danish layout spends the
+other way round. **Levels 3 and 4 were deliberately left alone on both**, which keeps
+backslash on Option+`<LSGT>`; moving it along with the rest would be a quiet regression on a
+machine used for code. `$` therefore now exists twice, on Shift+`<LSGT>` and Option+`4`,
+which is the same trade §1 makes for AltGr+2.
+
+### Verifying a layout change without logging out
+
+`XKB_CONFIG_ROOT` is a store path baked into the session environment at login, so a rebuild
+does **not** reach the running compositor — and `hyprctl eval 'hl.config({ input = {
+kb_layout = "dkmac" } })'` recompiles the keymap from the *old* root, so it is no help
+either. A relogin is the only way to see the change live.
+
+What can be checked first, and it catches everything except the keys themselves:
+
+```sh
+NEW=$(nix eval --raw '.#nixosConfigurations.bento-vm.config.services.xserver.xkb.dir')
+XKBC=$(nix build --no-link --print-out-paths nixpkgs#libxkbcommon)
+XKB_CONFIG_ROOT="$NEW" $XKBC/bin/xkbcli compile-keymap --layout dkmac --options lv3:alt_switch \
+  | grep -E 'key <(AE04|TLDE|LSGT)>'
+```
+
+That compiles the real deployed root — not the source file — so it proves the NixOS module
+merged the layout, that `rules/evdev.xml` still registers it, and that every level is what
+was asked for. `xkbcli` is not in the image; `nix build nixpkgs#libxkbcommon` fetches it.
