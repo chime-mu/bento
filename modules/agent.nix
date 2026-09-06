@@ -51,6 +51,19 @@
     # bare name. Listed again here because this module has to stand up on a headless bento
     # that never imports the desktop, and NixOS deduplicates identical store paths.
     jq
+
+    # **The interpreter scripts/check-before-commit.sh names as a `require_command`.**
+    # Without it the repository's own mandated pre-commit check aborts on its first line,
+    # on the very machine the repository builds — which is the failure this module's
+    # opening paragraph describes: the agent can rebuild the OS but cannot see the tools
+    # it needs.
+    #
+    # It is also what scripts/run-vm.sh and scripts/vm-screenshot.sh fall back to off the
+    # host, so the QEMU-stub tests in tests/ run here as well as on macOS.
+    #
+    # Cached, unlike `nodejs` above — `nix build --dry-run` fetches it and every other
+    # mainstream language runtime rather than building, so PLAN-v1 risk #2 is not in play.
+    python3
   ];
 
   # `bento doctor` — see modules/bento-cli.nix.
