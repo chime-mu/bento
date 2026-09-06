@@ -321,6 +321,57 @@ reload_on_display_change() {
   fi
 }
 
+hypr_event_socket() {
+  if [[ -n ${BENTO_DISPLAY_SYNC_HYPR_SOCKET:-} ]]; then
+    printf '%s' "$BENTO_DISPLAY_SYNC_HYPR_SOCKET"
+    return 0
+  fi
+  [[ -n ${XDG_RUNTIME_DIR:-} && -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]] || return 1
+  printf '%s/hypr/%s/.socket2.sock' \
+    "$XDG_RUNTIME_DIR" "$HYPRLAND_INSTANCE_SIGNATURE"
+}
+
+# Hyprland announces events on a unix socket, which bash cannot open. python3 is
+# already a dependency for the EDID decoder, so it does the streaming and the
+# filtering stays below, next to the udev one.
+stream_hypr_events() {
+  python3 - "$1" <<'PY'
+import socket
+import sys
+
+stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+stream.connect(sys.argv[1])
+pending = b""
+while True:
+    chunk = stream.recv(4096)
+    if not chunk:
+        break
+    pending += chunk
+    while b"\n" in pending:
+        line, pending = pending.split(b"\n", 1)
+        sys.stdout.buffer.write(line + b"\n")
+        sys.stdout.flush()
+PY
+}
+
+# A config reload throws away every runtime `hl.monitor` this service has applied
+# and falls back to the catch-all rule in home/chime/hyprland.nix, which is
+# deliberately `scale = 1` — the safe value for the window before any EDID has
+# been read. `bento rebuild switch` reaches that path through home-manager's
+# activation, so a rebuild silently halves the desktop's scale.
+#
+# No DRM hotplug follows a reload, so `reload_on_display_change` never sees it.
+# `hyprctl eval` does not itself emit `configreloaded`, so re-applying here
+# cannot feed back into another reload.
+reapply_on_config_reload() {
+  local line
+
+  while IFS= read -r line; do
+    [[ $line == configreloaded* ]] || continue
+    apply_preferred_modes
+  done
+}
+
 case "${1:-}" in
   --decode-edid)
     [[ $# -eq 2 ]] || {
@@ -337,11 +388,27 @@ case "${1:-}" in
     [[ $# -eq 1 ]] || exit 2
     reload_on_display_change
     ;;
+  --from-hypr-stdin)
+    [[ $# -eq 1 ]] || exit 2
+    reapply_on_config_reload
+    ;;
   "")
     # QEMU changes virtio-gpu's EDID whenever its Cocoa window geometry changes.
     # Linux exposes that as a DRM hotplug change. Apply once for session startup,
     # then recreate the udev monitor whenever it exits.
     apply_preferred_modes
+    # Hyprland's own event socket, watched alongside udev because a config reload
+    # produces no DRM hotplug. Backgrounded rather than run through a second
+    # `|` so that neither watcher's restart loop can stall the other; systemd
+    # tears it down with the rest of the service's cgroup.
+    (
+      while true; do
+        if hypr_socket=$(hypr_event_socket) && [[ -S $hypr_socket ]]; then
+          stream_hypr_events "$hypr_socket" | reapply_on_config_reload || true
+        fi
+        sleep "$retry_seconds"
+      done
+    ) &
     while true; do
       udevadm monitor --udev --subsystem-match=drm --property |
         reload_on_display_change || true
@@ -349,7 +416,7 @@ case "${1:-}" in
     done
     ;;
   *)
-    echo "usage: bento-display-sync [--once|--decode-edid EDID|--from-stdin]" >&2
+    echo "usage: bento-display-sync [--once|--decode-edid EDID|--from-stdin|--from-hypr-stdin]" >&2
     exit 2
     ;;
 esac

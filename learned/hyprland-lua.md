@@ -306,3 +306,69 @@ Two things learned in the process:
   Cmd combos to the guest.
 
 Resizing is reported as **slow** — noted, not yet measured or explained.
+
+## 8. A config reload silently halves the desktop scale
+
+Found 2026-09-06, immediately after the `bento rebuild switch` that deployed the keyboard
+changes: the letters went tiny. **This is not a Lua-migration regression** — `hyprctl
+keyword` was discarded by exactly the same mechanism — but it is triggered by every
+rebuild, so it had been hiding in plain sight.
+
+`home/chime/hyprland.nix` carries a deliberately output-agnostic catch-all:
+
+```nix
+monitor = { output = ""; mode = "preferred"; position = "auto"; scale = 1; };
+```
+
+That is the correct rule *before* any EDID has been read. `bento-display-sync` then replaces
+it at runtime with a real modeline and a computed scale. **A config reload re-applies the
+declarative rule and throws the runtime one away** — and no DRM hotplug follows, so the
+service's udev watcher never learns it was overwritten. home-manager's activation reloads
+Hyprland, so `bento rebuild switch` hits this every time.
+
+Reproduced in one line, with the fingerprint that identifies it:
+
+```
+before:                    3840x2412@59.97200 scale=2     ← display-sync's modeline
+after `hyprctl reload`:    3840x2412@60.00300 scale=1     ← the catch-all rule
+```
+
+**A round refresh rate is the tell.** display-sync computes a modeline from the EDID's
+detailed timing, which lands on values like `59.972`; Hyprland's own `preferred` handling
+reports the EDID's nominal `60.003`. So the refresh rate says which of the two last wrote
+the monitor, without needing to catch the moment it changed.
+
+### The fix, and why it is on the compositor's event socket
+
+Hyprland emits `configreloaded>>` on `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/
+.socket2.sock`. `display-sync.sh` now watches that alongside udev and re-applies. Watching
+the socket rather than hooking home-manager's activation covers every reload — a rebuild, a
+manual `hyprctl reload`, a future keybind — instead of only the one caller we knew about.
+
+Two things that make it safe, both measured rather than assumed:
+
+- **`hyprctl eval` does not emit `configreloaded`.** Verified by holding a `socat` on the
+  socket while applying `hl.monitor(...)`: zero events. So re-applying cannot feed back into
+  another reload.
+- **bash cannot open a unix socket**, and `socat`/`nc` would be new dependencies. `python3`
+  is already a `runtimeInput` for the EDID decoder, so it does the streaming; the filtering
+  stays in bash next to the udev one. `--from-hypr-stdin` is the test seam, mirroring
+  `--from-stdin`.
+
+`tests/test_display_sync.py` covers both halves: the filter (unrelated socket events must
+not re-apply) and the wiring (a real `AF_UNIX` socket, the service started for real, and the
+monitor re-applied on `configreloaded>>`).
+
+### Scale is derived from the EDID's *physical size*, and QEMU tracks the window
+
+Worth knowing before suspecting the scale computation again. `scale_for_mode` computes ppi
+from EDID bytes 21–22, and QEMU's dynamic display resizes those with the window, so ppi —
+and therefore the scale — stays constant as it is dragged:
+
+```
+edid 3840x2412  phys 44x28 cm → 221 ppi → scale 2
+edid 1098x690   phys 13x8  cm → 219 ppi → scale 2
+```
+
+A trace of four resizes showed every one arriving as `ACTION=change HOTPLUG=1` and being
+applied correctly. **Resizing was never the bug**; the reload was.
