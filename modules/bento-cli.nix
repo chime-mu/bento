@@ -23,6 +23,11 @@ let
   # is configured with.
   nix = config.nix.package;
 
+  # How Claude Code's release manifest names a build for this machine. Derived from the
+  # same stdenv attributes nixpkgs' own claude-code derivation uses to index `.platforms`,
+  # so `bento update claude-code` validates against the entry the build will actually read.
+  platformKey = "${pkgs.stdenv.hostPlatform.node.platform}-${pkgs.stdenv.hostPlatform.node.arch}";
+
   bento = pkgs.writeShellApplication {
     name = "bento";
 
@@ -38,6 +43,10 @@ let
       # caller's PATH — which is fine for `nixos-rebuild` and `nixos-version` (they come
       # from the system profile by design) and not fine for a dependency.
       pkgs.systemd
+      # `bento update`'s pinned-package half (modules/pins.nix) and `bento doctor`'s
+      # report of it: curl fetches a release manifest, jq reads and validates it.
+      pkgs.curl
+      pkgs.jq
       nix
     ];
 
@@ -51,9 +60,13 @@ let
             ACTION defaults to `switch`; `boot`, `test`, `dry-activate` and `build` are
             the other useful ones. Anything after `--` is passed to nixos-rebuild.
 
-        bento update [INPUT...]
-            Update flake.lock — every input, or only the ones named. Applies nothing;
-            follow it with `bento rebuild`.
+        bento update [NAME...]
+            Bring this machine's sources up to date. With no argument: every flake
+            input, then every pinned package. With arguments: only those, where a NAME
+            is either a flake input (`nixpkgs`) or a pin under pkgs/ (`claude-code`).
+            Applies nothing; follow it with `bento rebuild`.
+
+            A pin may be given an explicit version: `bento update claude-code@2.1.245`.
 
         bento gc [--older-than PERIOD | --all]
             Drop old generations and sweep the store. PERIOD defaults to 30d.
@@ -62,8 +75,9 @@ let
 
         bento doctor
             What this machine is running, and whether anything is wrong with it:
-            flake revision against the running system, last rebuild, failed units,
-            disk. Cheap context to hand an agent before it changes anything.
+            flake revision against the running system, last rebuild, pinned package
+            versions, failed units, disk. Reads only, never asks the network — cheap
+            context to hand an agent before it changes anything.
 
         bento help
 
@@ -133,11 +147,174 @@ let
         esac
       }
 
+      # ── pinned packages ─────────────────────────────────────────────────────────────
+      #
+      # A few tools move faster than nixpkgs follows, so this repo carries their version
+      # itself as pkgs/<name>/manifest.json and overrides nixpkgs' derivation with it —
+      # see modules/pins.nix for why that is a supported seam rather than a fork.
+      #
+      # `bento update` owns refreshing those manifests for the same reason it owns
+      # flake.lock: from where you sit, "update my machine's sources" is one intention,
+      # and having to remember that one source is a flake input and another is a JSON
+      # file under pkgs/ is exactly the kind of detail this CLI exists to absorb.
+
+      # A NAME is a pin if pkgs/NAME/manifest.json exists; anything else is a flake input.
+      is_pin() {
+        [ -e "$FLAKE_DIR/pkgs/$1/manifest.json" ]
+      }
+
+      # Every pin this repo carries, in directory order.
+      list_pins() {
+        local d
+        for d in "$FLAKE_DIR"/pkgs/*/; do
+          [ -e "$d/manifest.json" ] || continue
+          d="''${d%/}"
+          printf '%s\n' "''${d##*/}"
+        done
+      }
+
+      # Rewrite pkgs/claude-code/manifest.json from Anthropic's release channel.
+      #
+      # The whole update procedure is two unauthenticated GETs — `.../latest` names the
+      # current version, and a per-version manifest carries a SHA-256 for every platform.
+      # nixpkgs' own maintainer script does precisely this; we run it against this repo
+      # instead of against a nixpkgs checkout.
+      #
+      # **Upstream publishes two manifests, and which one is correct depends on the
+      # nixpkgs you are locked to.** Anthropic now ships the binary zstd-compressed:
+      # `manifest.zst.json` describes `claude.zst`, `manifest.json` the uncompressed
+      # `claude`, and the checksums are of different bytes. nixpkgs' derivation switched
+      # to the compressed one — it defaults to `./manifest.zst.json`, takes the filename
+      # from `.platforms.<key>.binary`, and runs `unzstd` in its install phase.
+      #
+      # We found this the way the design intends: pinning the uncompressed manifest
+      # against the newer derivation failed the build with
+      #
+      #   zstd: /nix/store/...-claude: unsupported format
+      #
+      # rather than silently installing something wrong. Worth keeping in mind when the
+      # next `bento update nixpkgs` moves this derivation again.
+      #
+      # The file we write stays `manifest.json` regardless of what upstream calls it:
+      # that name is *bento's* pin convention, the one `is_pin`, `list_pins` and
+      # `bento doctor` all walk, and it should not churn every time a vendor renames a
+      # file. Which upstream manifest fills it is this function's business alone.
+      update_pin_claude_code() {
+        local base="https://downloads.claude.ai/claude-code-releases"
+        local remote="manifest.zst.json"
+        local file="$FLAKE_DIR/pkgs/claude-code/manifest.json"
+        local want="''${1:-}" have="" tmp
+
+        mkdir -p "$(dirname "$file")"
+        have="$(jq -r '.version // ""' "$file" 2>/dev/null || true)"
+        [ -n "$want" ] || want="$(curl -fsSL "$base/latest")"
+
+        if [ "$want" = "$have" ]; then
+          echo "bento: claude-code already pinned at $have" >&2
+          return 0
+        fi
+
+        # Into a temporary file first: a manifest half-written by an interrupted download
+        # would still be valid input to `lib.importJSON` right up until it wasn't, and the
+        # failure would surface as a rebuild error rather than as a failed update.
+        #
+        # Cleaned up explicitly on every path rather than through `trap ... RETURN`, which
+        # looks tidier and does not work: bash runs the RETURN trap after the function's
+        # locals have gone out of scope, so `rm -f "$tmp"` fires `unbound variable` under
+        # `set -u` — after a *successful* update, which is the worst time to print an
+        # error.
+        tmp="$(mktemp)"
+        if ! curl -fsSL "$base/$want/$remote" -o "$tmp"; then
+          rm -f "$tmp"
+          echo "bento: no release manifest for claude-code $want" >&2
+          return 1
+        fi
+
+        # Two things worth checking before this becomes part of the build: that it parses,
+        # and that it describes the release we asked for. The second is not paranoia — a
+        # typo'd version in `bento update claude-code@...` otherwise pins whatever the CDN
+        # served for it.
+        if ! jq -e --arg v "$want" '.version == $v' "$tmp" >/dev/null 2>&1; then
+          rm -f "$tmp"
+          echo "bento: $base/$want/$remote is not a manifest for $want" >&2
+          return 1
+        fi
+        # This machine's platform has to actually be in it, or the next rebuild fails on a
+        # missing attribute deep inside the derivation instead of here. The key is the one
+        # nixpkgs' own derivation indexes `.platforms` by, interpolated from the same
+        # stdenv, so a bento built for anything else checks for its own build. `binary` is
+        # checked alongside `checksum` because the derivation builds its download URL from
+        # it — an entry missing it fails at fetch time with a 404 and no explanation.
+        if ! jq -e '.platforms["${platformKey}"] | .checksum and .binary' "$tmp" >/dev/null 2>&1; then
+          rm -f "$tmp"
+          echo "bento: manifest for $want carries no usable ${platformKey} build" >&2
+          return 1
+        fi
+
+        cp "$tmp" "$file"
+        rm -f "$tmp"
+        echo "bento: claude-code ''${have:-none} → $want" >&2
+      }
+
+      # Dispatch for the above. Per-package rather than generic on purpose: see the
+      # closing paragraph of modules/pins.nix.
+      update_pin() {
+        local name="$1"
+        case "$name" in
+          claude-code) shift; update_pin_claude_code "$@" ;;
+          *)
+            echo "bento update: '$name' is pinned but has no updater in bento-cli.nix" >&2
+            return 2
+            ;;
+        esac
+      }
+
       cmd_update() {
         resolve_flake
-        ( cd "$FLAKE_DIR" && ${nix}/bin/nix flake update "$@" )
+
+        local -a inputs=() pins=() pin_versions=()
+        local touch_lock=0
+
+        if [ $# -eq 0 ]; then
+          # No argument means everything: all flake inputs, and every pin.
+          touch_lock=1
+          mapfile -t pins < <(list_pins)
+          pin_versions=()
+        else
+          local arg name version
+          for arg in "$@"; do
+            # `name@version` pins an explicit release; a bare name takes the latest.
+            name="''${arg%%@*}"
+            version=""
+            if [ "$arg" != "$name" ]; then version="''${arg#*@}"; fi
+
+            if is_pin "$name"; then
+              pins+=("$name")
+              pin_versions+=("$version")
+            elif [ -n "$version" ]; then
+              echo "bento update: '@version' only applies to pinned packages, and" >&2
+              echo "               there is no pkgs/$name/manifest.json" >&2
+              exit 2
+            else
+              inputs+=("$arg")
+            fi
+          done
+          if [ ''${#inputs[@]} -gt 0 ]; then touch_lock=1; fi
+        fi
+
+        local i
+        for i in "''${!pins[@]}"; do
+          update_pin "''${pins[i]}" "''${pin_versions[i]:-}"
+        done
+
+        # An empty `inputs` array makes this `nix flake update`, which updates every
+        # input — which is what the no-argument case wants.
+        if [ "$touch_lock" -eq 1 ]; then
+          ( cd "$FLAKE_DIR" && ${nix}/bin/nix flake update "''${inputs[@]}" )
+        fi
+
         echo >&2
-        echo "bento: flake.lock updated — apply it with 'bento rebuild'" >&2
+        echo "bento: sources updated — apply them with 'bento rebuild'" >&2
       }
 
       cmd_gc() {
@@ -259,6 +436,20 @@ let
             printf '%-15s %s\n' "in sync" "no — 'bento rebuild' would change this machine"
           fi
         fi
+
+        # Packages whose version this repo pins itself rather than taking from nixpkgs
+        # (modules/pins.nix). Read off the manifests on disk, deliberately: `doctor` is
+        # the first thing an agent runs and has to work on a machine with no network and
+        # something already wrong with it, so it reports what is *pinned* and never asks
+        # upstream what is current. `bento update` is the verb that talks to the network.
+        local pin_dir pin_name pin_version
+        for pin_dir in "$flake_dir"/pkgs/*/; do
+          [ -e "$pin_dir/manifest.json" ] || continue
+          pin_name="''${pin_dir%/}"
+          pin_name="''${pin_name##*/}"
+          pin_version="$(jq -r '.version // "unreadable"' "$pin_dir/manifest.json" 2>/dev/null || echo unreadable)"
+          printf '%-15s %s\n' "pinned" "$pin_name $pin_version"
+        done
         echo
 
         echo "── health ────────────────────────────────────────────────────"

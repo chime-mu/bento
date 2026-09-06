@@ -11,6 +11,8 @@
     ./audio.nix
     ../../modules/core.nix
     ../../modules/bento-cli.nix
+    ../../modules/pins.nix
+    ../../modules/languages.nix
     ../../modules/desktop.nix
     ../../modules/fonts.nix
     ../../modules/agent.nix

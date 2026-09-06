@@ -18,6 +18,7 @@
     ./chromium.nix
     ./neovim.nix
     ./clipboard.nix
+    ./direnv.nix
   ];
 
   home.stateVersion = "26.11";
