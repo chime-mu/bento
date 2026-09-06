@@ -55,6 +55,29 @@ in
   # `osConfig.system.path` and not `system.build.toplevel`: the latter depends on
   # home-manager's own generation, and asking for it from inside home-manager is an
   # infinite recursion.
+  # **And the re-index above leaves walker dead unless walker restarts with it.**
+  #
+  # walker.service carries `Requires=elephant.service`, so elephant going down takes
+  # walker with it — and home-manager's sd-switch *stops and starts* a changed unit
+  # rather than issuing a restart, which is not the same thing here. Measured directly:
+  #
+  #   systemctl --user stop elephant   → elephant inactive, walker inactive
+  #   systemctl --user start elephant  → elephant active,   walker still inactive
+  #
+  # (A plain `systemctl restart elephant` does bring walker back, which is why this hides:
+  # the failure needs sd-switch's stop-then-start, i.e. a rebuild.)
+  #
+  # So every rebuild that changed what is installed re-indexed elephant correctly and left
+  # Super+Space cold-starting GTK4 on llvmpipe — the pause `systemd.enable = true` below
+  # exists to avoid, silently reintroduced by the fix for the *other* staleness bug.
+  #
+  # Carrying the same triggers here makes walker a changed unit in the same pass, so
+  # sd-switch starts it too, and `After=elephant.service` keeps the order right.
+  systemd.user.services.walker.Unit.X-Restart-Triggers = [
+    config.home.path
+    osConfig.system.path
+  ];
+
   systemd.user.services.elephant = {
     Unit.X-Restart-Triggers = [
       config.home.path

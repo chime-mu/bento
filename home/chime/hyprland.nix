@@ -91,6 +91,7 @@ let
         --hideqa \
         --placeholder "Bento key bindings" <<'BINDINGS'
       ⌘ K — Show key bindings
+      ⌘ Escape — System menu (lock, log out, reboot, shut down)
       ⌘ Return — Open terminal
       ⌘ B — Open browser
       ⌘ Space — Open launcher
@@ -109,6 +110,54 @@ let
       ⌘ Left-drag — Move window
       ⌘ Right-drag — Resize window
       BINDINGS
+    '';
+  };
+
+  # Omarchy's System menu, which is where its Logout lives. Theirs is a route inside one
+  # big menu driven by a Quickshell plugin (`omarchy-shell shell summon omarchy.menu`)
+  # over a JSONC definition; that is a large dependency for four lines of shell, and this
+  # repo already has the same UI for free in walker's dmenu mode. So the structure is
+  # borrowed and the machinery is not — the entries and their order are theirs
+  # (Lock, Suspend, Logout, Reboot, Shutdown), minus the ones this VM has no answer for.
+  #
+  # Two of the actions deliberately go the long way round:
+  #
+  #   Lock is `loginctl lock-session`, not hyprlock, for the reason the Super+L bind
+  #   already gives below — hypridle owns `lock_cmd` and answers logind's Lock signal, so
+  #   every route into the lock screen stays one code path.
+  #
+  #   Logout is `hyprctl dispatch 'hl.dsp.exit()'` and not `hyprctl dispatch exit`. Under
+  #   the Lua config manager a dispatcher argument is evaluated as Lua; the old spelling
+  #   fails at runtime with no output anyone would see from a launcher
+  #   (learned/hyprland-lua.md §3).
+  #
+  # No Suspend: this is a guest whose host window is the display, and `systemctl suspend`
+  # inside it is not the same gesture as sleeping the Mac. No confirmation step either,
+  # which is Omarchy's behaviour — say so if a mistyped Enter on Shut down turns out to
+  # cost more than the second it saves.
+  systemMenu = pkgs.writeShellApplication {
+    name = "bento-system";
+    runtimeInputs = [ pkgs.systemd ];
+    text = ''
+      choice=$(${lib.getExe pkgs.walker} \
+        --dmenu \
+        --nohints \
+        --hideqa \
+        --placeholder "Bento system" <<'ACTIONS'
+      Lock
+      Log out
+      Reboot
+      Shut down
+      ACTIONS
+      ) || exit 0
+
+      case "$choice" in
+        "Lock") loginctl lock-session ;;
+        "Log out") hyprctl dispatch 'hl.dsp.exit()' ;;
+        "Reboot") systemctl reboot ;;
+        "Shut down") systemctl poweroff ;;
+        *) exit 0 ;;
+      esac
     '';
   };
 in
@@ -269,6 +318,13 @@ in
         # macOS does not reserve Command+K, which makes this cheat sheet reachable even
         # on releases where Command+Space is consumed by Spotlight ahead of QEMU.
         (mkBind "K" (mkExec (lib.getExe keybindingsMenu)))
+
+        # Escape for the system menu, the way a power menu is usually reached. The menu is
+        # also a desktop entry, so Super+Space then "system" finds it without knowing this
+        # bind exists — which is the whole point, since the session had no discoverable way
+        # to log out before it.
+        (mkBind "ESCAPE" (mkExec (lib.getExe systemMenu)))
+
         (mkBind "RETURN" "hl.dsp.exec_cmd(terminal)")
         (mkBind "B" "hl.dsp.exec_cmd(browser)")
         (mkBind "SPACE" "hl.dsp.exec_cmd(launcher)")
@@ -353,7 +409,30 @@ in
     };
   };
 
+  # What makes the system menu findable without knowing Super+Escape: elephant indexes
+  # desktop entries, so this puts "System" one Super+Space and three letters away. The
+  # entry has to be a *launcher* for the menu rather than four entries for the four
+  # actions — "Shut down" sitting in the same list as an editor is one fuzzy match away
+  # from ending the session by accident.
+  #
+  # `NoDisplay` is deliberately not set. home/chime/walker.nix explains why a rebuild
+  # re-indexes at all: elephant's unit carries the profile paths, so adding this entry
+  # changes the unit text and sd-switch restarts it. Nothing else is needed to make it
+  # appear.
+  xdg.desktopEntries.bento-system = {
+    name = "System";
+    genericName = "Lock, log out, reboot, shut down";
+    comment = "Bento session and power actions";
+    exec = lib.getExe systemMenu;
+    icon = "system-shutdown";
+    terminal = false;
+    categories = [ "System" ];
+  };
+
   # The screenshot bind writes here, and grim will not create the directory itself.
-  home.packages = [ keybindingsMenu ] ++ lib.optionals dynamicDisplay [ displaySync ];
+  home.packages = [
+    keybindingsMenu
+    systemMenu
+  ] ++ lib.optionals dynamicDisplay [ displaySync ];
   home.file."Pictures/.keep".text = "";
 }
