@@ -200,11 +200,34 @@ in
     # every config key and dispatcher the running binary actually accepts.
     settings = {
       mod._var = "SUPER";
-      # Phase 5's one-line change, exactly as learned/phase-3.md §8 promised: every bind
-      # below follows this variable. `foot` is still installed and still themed
-      # (home/chime/foot.nix) — it is the fallback that cannot be the reason a graphical
-      # test fails, and putting it back is editing this line.
-      terminal._var = "ghostty";
+      # Phase 5 made this `ghostty`, exactly as learned/phase-3.md §8 promised it could;
+      # measurement made it `foot` again. Every bind below still follows this variable, so
+      # the terminal remains a one-line decision — and ghostty is still installed and still
+      # themed (home/chime/ghostty.nix), now as the fallback that cannot be the reason a
+      # graphical test fails.
+      #
+      # **Ghostty costs 1.2 cores to sit still on this machine, and it cannot be tuned
+      # out.** Its own renderer thread is idle — 3 seconds of CPU in 29 minutes — while
+      # four `llvmpipe-*` threads spin. The cause is the chain home/chime/ghostty.nix
+      # documents: this GPU offers no desktop GL (`Max core profile version: 0.0`), ghostty
+      # demands one, so it draws through `LIBGL_ALWAYS_SOFTWARE=1`, and llvmpipe's cost
+      # scales with window area × redraw rate. A near-fullscreen terminal with any
+      # animation in it — a TUI spinner is enough — pins a core and holds it.
+      #
+      # Measured at 3840x2412: foot idles at 0 and costs 0.10 core under a 20 fps *full
+      # screen* repaint, where ghostty costs 1.2 cores showing a spinner. foot also holds
+      # 4 MB against 375 MB, one thread against 23, and reads 200k lines in 122 ms against
+      # 500–839 ms.
+      #
+      # Ruled out, each still leaving the four llvmpipe threads up: `LP_NUM_THREADS=0`;
+      # `GSK_RENDERER=gl` and `=ngl`; and unsetting `GSK_RENDERER`, which halves the cost
+      # but belongs to walker session-wide (learned/HANDOFF.md — "Do not re-gate it").
+      # Dropping `LIBGL_ALWAYS_SOFTWARE` is not available either: ghostty then fails to
+      # start with "No EGL configuration available", still true on mesa 26.2.1.
+      #
+      # This is a property of *this host*, not a verdict on ghostty — it is the right
+      # terminal where there is a real GPU behind it.
+      terminal._var = "foot";
       # Phase 5's browser. `xdg-open` resolves to the same binary through
       # home/chime/chromium.nix's mimeApps entry, so the key and the URL handler cannot
       # drift apart.

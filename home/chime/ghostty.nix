@@ -1,8 +1,15 @@
-# Ghostty — the terminal, and the first thing Super+Return opens.
+# Ghostty — installed, themed, and *not* the terminal.
 #
-# `home/chime/foot.nix` stays exactly as it is. It is the fallback that cannot be the
-# reason a graphical test fails (learned/phase-3.md §8), and the only line that decides
-# which of the two is *the* terminal is `$terminal` in home/chime/hyprland.nix.
+# It was, from Phase 5 until the CPU was measured: ghostty has no desktop GL to render
+# with here, so it draws through `LIBGL_ALWAYS_SOFTWARE=1` and four llvmpipe threads, and
+# a near-fullscreen window with a TUI spinner in it pins a core. `$terminal` in
+# home/chime/hyprland.nix carries the measurements and the tunings that did not work.
+#
+# So the roles are swapped and nothing else changed: this file stays exactly as it is, as
+# the fallback that cannot be the reason a graphical test fails (learned/phase-3.md §8),
+# and it is the right terminal again the moment there is a real GPU behind it. The only
+# line that decides which of the two is *the* terminal is `$terminal` in
+# home/chime/hyprland.nix.
 #
 # The colours come from `theme.colors.terminal` — the ANSI 16 — which foot's config
 # already consumes in the same shape. That is the whole point of the third vocabulary in

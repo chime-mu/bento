@@ -1,4 +1,9 @@
-# foot — the terminal, until Phase 5 makes it ghostty.
+# foot — the terminal, and the first thing Super+Return opens.
+#
+# Phase 5 handed that job to ghostty and measurement handed it back: ghostty renders
+# through llvmpipe on this GPU and costs 1.2 cores to sit still, where foot links no GL at
+# all. The reasoning, the numbers and what was ruled out are on `$terminal` in
+# home/chime/hyprland.nix, which is still the only line that decides between the two.
 #
 # PLAN-v1 puts terminal theming in Phase 5, with ghostty. This file exists anyway, because
 # Phase 4's goal is that the desktop *looks* like one thing, and the terminal is the only
