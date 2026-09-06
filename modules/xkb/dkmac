@@ -1,0 +1,25 @@
+// A Danish layout for an Apple keyboard.
+//
+// xkeyboard-config's own dk(mac) is very nearly a stub: it includes dk(basic) — which is
+// the PC/Windows Danish layout — and then overrides exactly two keys, <AB10> and <SPCE>.
+// Every symbol Apple places differently from a PC keyboard is therefore simply wrong in
+// it. This file corrects them one key at a time, as they are found on the real hardware.
+//
+// Level 3 is reached with *either* Option key. That is not done here but with the
+// `lv3:alt_switch` option in home/chime/hyprland.nix, because it is a property of the
+// modifier rather than of any key: xkb's default, `lv3:ralt_switch`, gives level 3 to the
+// right Alt alone, whereas macOS treats the two Options alike.
+
+default partial alphanumeric_keys
+xkb_symbols "basic" {
+
+    include "dk(mac)"
+
+    name[Group1] = "Danish (Apple)";
+
+    // Apple puts @ on Option+' — the key immediately left of Return. dk(basic) leaves that
+    // key's third level as dead_doubleacute and reaches @ through AltGr+2 instead, which is
+    // the PC convention. AltGr+2 is deliberately left alone: it costs nothing to keep, and
+    // muscle memory for it is worth preserving while this layout is still being fitted.
+    key <BKSL> { [ apostrophe, asterisk, at, multiply ] };
+};

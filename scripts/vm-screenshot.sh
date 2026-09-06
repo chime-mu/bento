@@ -8,6 +8,7 @@
 #   ./scripts/vm-screenshot.sh --type 'ls -la' --key ret   # type a string, then press enter
 #   ./scripts/vm-screenshot.sh --scanout             # force the QMP path (see below)
 #   ./scripts/vm-screenshot.sh --guest               # force the grim path
+#   ./scripts/vm-screenshot.sh --type 'x' --raw-keys   # skip the layout guard (see below)
 #
 # There are two ways to photograph this machine, and which one is correct depends on how
 # the VM was launched. **The default picks for you**; both `--key` and `--type` work either
@@ -38,6 +39,14 @@
 # is how you drive a program *inside* the guest's terminal rather than the compositor
 # around it. Both may be repeated, and they are sent in the order written.
 #
+# `--type` needs one more thing to be true, and since the guest stopped being US it is not
+# free: `sendkey` injects physical key *positions*, so the string is only typed as written
+# if the guest reads those positions as US. Under `dkmac` it does not. So --type asks the
+# guest for its layout over ssh, forces `us` for the duration, and restores it afterwards
+# — which means --type now needs a reachable ssh and a running compositor, and fails loudly
+# rather than typing the wrong thing. `--raw-keys` skips all of that, for a target that is
+# genuinely US already: the tty1 greeter, for one, since `console.keyMap` is unset.
+#
 # Requires python3 (macOS ships one) — the QMP protocol is line-delimited JSON over a unix
 # socket, and it needs a capabilities handshake before it accepts a command.
 
@@ -58,6 +67,8 @@ MODE="auto"
 SSH_PORT="2222"
 VM_USER="chime"
 GPU_MODE=""
+# See the "--type types positions, not characters" block below. 1 disables the guard.
+RAW_KEYS=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -66,6 +77,7 @@ while [[ $# -gt 0 ]]; do
     --delay) DELAY="${2:?--delay needs seconds}"; shift 2 ;;
     --guest) MODE="guest"; shift ;;
     --scanout) MODE="scanout"; shift ;;
+    --raw-keys) RAW_KEYS=1; shift ;;
     -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "error: unknown argument: $1" >&2; exit 2 ;;
     *) OUT="$1"; shift ;;
@@ -139,6 +151,64 @@ if [[ ${MODE} == "auto" ]]; then
   fi
 fi
 
+# `sendkey` injects *physical key positions*, and keys_for() below spells those positions
+# out on the assumption that the guest reads them as US. Since learned/keyboard-layout.md
+# the guest runs `dkmac`, where the same positions mean different things — the `minus`
+# position types `+`, the `slash` position types `-` — so a --type string silently types
+# something other than what it says. Every graphical test since Phase 3 goes through here.
+#
+# Teaching this script the guest's layout would be a second copy of what already lives in
+# modules/xkb/dkmac, and would rot the moment a key moves. Instead: force the guest to US
+# for the duration and put back exactly what was there. The restore is a trap, so it runs
+# on a failed screendump and on Ctrl-C as well as on success.
+#
+# `--key` needs none of this — modifiers and ret/tab/spc are position-stable across
+# layouts. Only --type's ASCII is affected, so only --type pays for the ssh round trip.
+ssh_opts=(-p "${SSH_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
+
+# hyprctl over ssh needs the compositor's socket, and an ssh session has neither
+# XDG_RUNTIME_DIR nor WAYLAND_DISPLAY — same lookup the grim path does further down.
+guest_hyprctl() {
+  ssh "${ssh_opts[@]}" "${VM_USER}@localhost" "
+        export XDG_RUNTIME_DIR=/run/user/1000
+        WAYLAND_DISPLAY=\$(cd \"\$XDG_RUNTIME_DIR\" && ls -1 | grep -m1 '^wayland-[0-9]\\+\$')
+        [ -n \"\$WAYLAND_DISPLAY\" ] || { echo 'no wayland socket in '\"\$XDG_RUNTIME_DIR\" >&2; exit 1; }
+        export WAYLAND_DISPLAY
+        exec hyprctl $*"
+}
+
+SAVED_LAYOUT=""
+restore_layout() {
+  [[ -n ${SAVED_LAYOUT} ]] || return 0
+  # Set the name back rather than `hyprctl reload`: reload would also discard any *other*
+  # runtime keyword a caller had set, which is not this function's business to undo.
+  guest_hyprctl "keyword input:kb_layout ${SAVED_LAYOUT}" >/dev/null 2>&1 || true
+  SAVED_LAYOUT=""
+}
+
+typing=0
+for item in ${INPUT[@]+"${INPUT[@]}"}; do
+  case "${item}" in type:*) typing=1 ;; esac
+done
+
+if [[ ${typing} -eq 1 && ${RAW_KEYS} -eq 0 ]]; then
+  # `str: dkmac` on the first line; empty if the option was never set.
+  SAVED_LAYOUT="$(guest_hyprctl "getoption input:kb_layout" 2>/dev/null | awk '/^str:/{print $2; exit}')" || true
+  if [[ -z ${SAVED_LAYOUT} ]]; then
+    echo "error: --type could not read the guest's keyboard layout over ssh." >&2
+    echo "       Without it the typed string is positions, not characters: under a" >&2
+    echo "       non-US layout it types something else entirely, and nothing fails." >&2
+    echo "       Fix the ssh path, or pass --raw-keys if the target really is US" >&2
+    echo "       (the tty1 greeter is, for example — console.keyMap is unset)." >&2
+    exit 1
+  fi
+  if [[ ${SAVED_LAYOUT} != "us" ]]; then
+    trap restore_layout EXIT INT TERM
+    guest_hyprctl "keyword input:kb_layout us" >/dev/null
+  else
+    SAVED_LAYOUT=""   # already US; nothing to put back
+  fi
+fi
 # `${INPUT[@]+...}` because macOS ships bash 3.2, where an empty array expanded under
 # `set -u` is an "unbound variable" — a plain capture with no --key/--type would die here.
 python3 - "${QMP_SOCK}" "${OUT}" "${DELAY}" "${MODE}" ${INPUT[@]+"${INPUT[@]}"} <<'PY'
@@ -219,7 +289,6 @@ if mode == "scanout":
 PY
 
 if [[ ${MODE} == "guest" ]]; then
-  ssh_opts=(-p "${SSH_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
   # grim needs to find the compositor, and an ssh session has neither XDG_RUNTIME_DIR nor
   # WAYLAND_DISPLAY. The socket name is *not* reliably wayland-1 — it is whichever number
   # the compositor got — so it is looked up rather than assumed. `grim -` writes the PNG

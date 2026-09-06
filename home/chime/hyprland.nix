@@ -116,11 +116,16 @@ in
       # Phase 4's launcher. walker runs as a GApplication service (home/chime/walker.nix),
       # so this is a message to a process that is already up, not a cold GTK4 start.
       "$launcher" = "walker";
-
       # Output-agnostic on purpose. This is the safe rule before the session service runs
       # and for unpatched software QEMU; bento-display-sync replaces the same catch-all
       # rule with the live EDID modeline and computed Retina scale. Never name Virtual-1.
       monitor = ",preferred,auto,1";
+
+      # Hyprland writes *none* of its own messages to the log file by default — only
+      # aquamarine, which has a separate logger, keeps writing, so the file fills with
+      # libinput debounce noise while the lines that matter (an invalid kb_layout, for one)
+      # are silently dropped. Turning this off is what makes the log worth opening.
+      debug.disable_logs = false;
 
       general = {
         gaps_in = 4;
@@ -187,7 +192,13 @@ in
       };
 
       input = {
-        kb_layout = "us";
+        # The host is a Danish Mac. QEMU's virtio keyboard forwards raw scancodes rather
+        # than the host's resolved characters, so the layout has to be named again here or
+        # the guest reads a Danish keyboard as US.
+        kb_layout = "dkmac";
+        # Both Option keys chose level 3, as macOS does; xkb's default gives it to the
+        # right one alone, so Left-Option would otherwise be dead for symbols.
+        kb_options = "lv3:alt_switch";
         follow_mouse = 1;
         # QEMU's usb-tablet sends absolute coordinates, so pointer acceleration would be
         # applied to a position that is already exactly where the host's cursor is.

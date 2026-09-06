@@ -19,6 +19,17 @@ Two new pieces of work are requested, described in full below. Neither is in `PL
 > the keybinding-menu fallback. **Both tasks below are still untouched.** The full sequence
 > and superseded conclusions are in `learned/keyboard-capture.md`, especially §13.
 
+> **Update, 2026-09-06.** **Task 2 is largely done, and Task 1 has moved without being
+> started.** Findings for both are in `learned/keyboard-layout.md`. The guest now has a
+> custom `dkmac` layout (`modules/xkb/dkmac`), because `dk(mac)` turned out to be a stub
+> over the *PC* Danish layout rather than Apple's; and it now runs at scale 2, because the
+> scanout is **3840x2412** — not the 1920x1080 `scripts/run-vm.sh` asks for. That second
+> one bears directly on Task 1's open question: the guest **did** follow the host window,
+> so dynamic resize is no longer "unknown and the first thing to measure". Full-screen mode
+> itself is still untouched. **Two things are unresolved**: nobody has yet seen `dkmac`
+> load (the running session predates `XKB_CONFIG_ROOT` — confirm after the next login), and
+> the `--type` trap flagged in Task 2 below is now real rather than predicted.
+
 ## Paste this into the new session
 
 > Two changes to bento (`/Users/chime/Workspace/Bento`), described in

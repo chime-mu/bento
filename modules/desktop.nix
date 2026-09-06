@@ -52,6 +52,17 @@ in
   '';
 
   config = {
+    # The host is a Danish Mac, and xkeyboard-config's dk(mac) is a stub over the PC Danish
+    # layout rather than Apple's (see modules/xkb/dkmac). Registering it here rather than
+    # pointing Hyprland at a bare file is what makes it a real layout: this module patches
+    # it into evdev.xml and base.lst, and sets XKB_CONFIG_ROOT session-wide, so the greeter
+    # and any future console keymap see the same layout the compositor does.
+    services.xserver.xkb.extraLayouts.dkmac = {
+      description = "Danish (Apple)";
+      languages = [ "dan" ];
+      symbolsFile = ./xkb/dkmac;
+    };
+
     programs.hyprland.enable = true;
 
     # pipewire arrives via services.graphical-desktop (see the header), but rtkit does not,
