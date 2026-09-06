@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -251,8 +252,9 @@ class DisplaySyncTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                "keyword monitor ,modeline 1236 5120 6400 6553 6912 2880 "
-                "2894 2908 2980 -hsync -vsync,auto,2"
+                'eval hl.monitor({ output = "", mode = "modeline 1236 5120 6400 '
+                '6553 6912 2880 2894 2908 2980 -hsync -vsync", position = "auto", '
+                'scale = "2" })'
             ],
         )
 
@@ -280,7 +282,9 @@ HOTPLUG=1
             self.run_sync("--from-stdin", environment=environment, input_text=events)
             calls = log.read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(calls), 2)
-        self.assertTrue(all(call.endswith(",auto,1") for call in calls))
+        self.assertTrue(
+            all(call.endswith('position = "auto", scale = "1" })') for call in calls)
+        )
 
     def test_recreates_udev_monitor_after_it_exits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -324,6 +328,83 @@ HOTPLUG=1
             finally:
                 process.terminate()
                 process.wait(timeout=2)
+
+
+    def test_config_reload_reapplies_the_monitor(self) -> None:
+        # A reload discards every runtime monitor rule and falls back to the
+        # catch-all in home/chime/hyprland.nix, without any DRM hotplug to
+        # notice it by. Unrelated events on the same socket must not re-apply.
+        events = """\
+workspace>>1
+configreloaded>>
+activewindowv2>>adfe5766b030
+openwindow>>adfe5766b030,1,ghostty,ghostty
+configreloaded>>
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            environment, log = self.make_runtime(temporary, legacy_edid())
+            self.run_sync(
+                "--from-hypr-stdin", environment=environment, input_text=events
+            )
+            calls = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(
+            all(call.endswith('position = "auto", scale = "1" })') for call in calls)
+        )
+
+    def test_watches_the_hyprland_event_socket(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            environment, log = self.make_runtime(temporary, legacy_edid())
+
+            # The foreground watcher is udev's; stub it so it neither spins nor
+            # needs a real seat, leaving the socket watcher as the thing tested.
+            fake_bin = Path(environment["PATH"].split(os.pathsep)[0])
+            udevadm = fake_bin / "udevadm"
+            udevadm.write_text(f"#!{BASH}\nsleep 30\n", encoding="utf-8")
+            udevadm.chmod(0o755)
+
+            socket_path = temporary / "socket2.sock"
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(str(socket_path))
+            server.listen(1)
+
+            full_environment = os.environ.copy()
+            full_environment.update(environment)
+            full_environment["BENTO_DISPLAY_SYNC_HYPR_SOCKET"] = str(socket_path)
+            full_environment["BENTO_DISPLAY_SYNC_RETRY_SECONDS"] = "0.01"
+
+            process = subprocess.Popen(
+                ["bash", str(DISPLAY_SYNC)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=full_environment,
+            )
+            try:
+                server.settimeout(5)
+                connection, _ = server.accept()
+                connection.sendall(b"configreloaded>>\n")
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if log.exists() and len(
+                        log.read_text(encoding="utf-8").splitlines()
+                    ) >= 2:
+                        break
+                    time.sleep(0.02)
+                else:
+                    self.fail("a config reload did not re-apply the monitor")
+                connection.close()
+            finally:
+                process.terminate()
+                process.wait(timeout=5)
+                server.close()
+
+            # One at startup, one for the reload, and identical: the EDID did
+            # not change, only the rule Hyprland was holding.
+            calls = log.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0], calls[1])
 
 
 if __name__ == "__main__":

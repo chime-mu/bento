@@ -23,7 +23,21 @@ let
   # installs Hyprland through `security.wrappers` with cap_sys_nice, which is what lets it
   # give itself SCHED_RR at startup. Launching ${pkgs.hyprland}/bin/Hyprland directly — as
   # most greetd examples do — silently drops that.
-  hyprland = "${config.security.wrapperDir}/Hyprland";
+  compositor = "${config.security.wrapperDir}/Hyprland";
+
+  # 0.56 prints "Hyprland was started without start-hyprland. This is strongly discouraged"
+  # across the top of the screen at every launch, and upstream's own `hyprland.desktop` now
+  # reads `Exec=…/bin/start-hyprland`. It is a watchdog parent: it hands the compositor a
+  # `--watchdog-fd` and stays in the foreground, so greetd still has one process to wait on.
+  #
+  # `--path` is what keeps the capability wrapper above in the picture. Without it
+  # start-hyprland resolves `Hyprland` with execvp, i.e. through whatever PATH greetd's
+  # session shell happens to have — the store binary, cap_sys_nice silently dropped, which
+  # is the exact failure the wrapper exists to prevent.
+  startHyprland = lib.getExe' config.programs.hyprland.package "start-hyprland";
+  hyprland = "${startHyprland} --path ${compositor}";
+
+  greeter = lib.getExe' pkgs.greetd "agreety";
 in
 {
   options.bento.desktop.softwareRendering = lib.mkEnableOption ''
@@ -56,12 +70,32 @@ in
     # layout rather than Apple's (see modules/xkb/dkmac). Registering it here rather than
     # pointing Hyprland at a bare file is what makes it a real layout: this module patches
     # it into evdev.xml and base.lst, and sets XKB_CONFIG_ROOT session-wide, so the greeter
-    # and any future console keymap see the same layout the compositor does.
+    # and the console keymap see the same layout the compositor does.
     services.xserver.xkb.extraLayouts.dkmac = {
       description = "Danish (Apple)";
       languages = [ "dan" ];
       symbolsFile = ./xkb/dkmac;
     };
+
+    # Naming the layout at the *system* level as well, which is what makes the sentence
+    # above true rather than aspirational. Nothing in a Wayland session reads
+    # `services.xserver.xkb` — Hyprland is told separately, in home/chime/hyprland.nix,
+    # which now reads these two values back out of `osConfig` so the two cannot drift —
+    # but `console.useXkbConfig` does, and it is the only supported way to get a non-stock
+    # layout onto a tty.
+    #
+    # It runs `ckbcomp` at build time to translate the xkb layout into a kbd keymap, and
+    # nixos/modules/config/console.nix passes it `-I$XKB_CONFIG_ROOT` when that variable is
+    # set in `environment.sessionVariables` — which is exactly what the extra-layouts module
+    # above does. So `dkmac` resolves for the console for the same reason it resolves for
+    # the compositor, out of the same patched tree.
+    #
+    # This matters in one situation and it is the worst one: Hyprland failed to start, and
+    # the thing on tty1 is agreety asking for a password. Before this, that prompt was US
+    # while every other keyboard on the machine was Danish.
+    services.xserver.xkb.layout = "dkmac";
+    services.xserver.xkb.options = "lv3:alt_switch";
+    console.useXkbConfig = true;
 
     programs.hyprland.enable = true;
 
@@ -92,6 +126,17 @@ in
     # The module's `restart` option defaults to false whenever `initial_session` is set, on
     # purpose: restarting greetd re-triggers the autologin, so a Hyprland that crashes at
     # startup would relaunch forever instead of leaving the failure visible.
+    #
+    # start-hyprland does relaunch the compositor after an *unclean* exit, one level below
+    # greetd, so that reasoning now only holds for the clean ones. `$mod SHIFT, Q` is clean
+    # and still lands on agreety's prompt; a segfault loop is what the watchdog is for, and
+    # its restart is visible in the journal rather than silent.
+    #
+    # greetd runs a session command through a shell — it wraps it in
+    # `[ -f /etc/profile ] && . /etc/profile; …; exec <command>` — so `initial_session`
+    # takes the arguments `hyprland` now carries without further ceremony. agreety does
+    # not: its `--cmd` is a single value (`Unrecognized option: 'path'` otherwise), so the
+    # greeter's copy has to reach it as one shell word, which is what the quoting is for.
     services.greetd = {
       enable = true;
       settings = {
@@ -99,7 +144,7 @@ in
           command = hyprland;
           user = "chime";
         };
-        default_session.command = "${lib.getExe' pkgs.greetd "agreety"} --cmd ${hyprland}";
+        default_session.command = "${greeter} --cmd ${lib.escapeShellArg hyprland}";
       };
     };
 

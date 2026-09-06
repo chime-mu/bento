@@ -19,6 +19,28 @@ Two new pieces of work are requested, described in full below. Neither is in `PL
 > the keybinding-menu fallback. **Both tasks below are still untouched.** The full sequence
 > and superseded conclusions are in `learned/keyboard-capture.md`, especially §13.
 
+> **Update, 2026-09-06 — the reboot is done and it passed.** Hyprland is now configured in
+> **Lua**, not hyprlang, and greetd launches it through **`start-hyprland`**; both were
+> deprecation warnings printed across the top of the screen at every launch, and `.conf`
+> support goes away in Hyprland 0.57. The machine was rebuilt with `bento rebuild boot` and
+> rebooted **to prove greetd's autologin still lands in a desktop**, which is the one part
+> no offline check could cover. **It does** — generation 51, no failed units, empty
+> `configerrors`, 42 binds, `start-hyprland` the parent of `Hyprland --watchdog-fd 4`, and
+> no banner in a `grim` capture. Super+drag moves and resizes windows, and both new
+> `hyprctl eval` call sites answer `ok` against the live session. `learned/hyprland-lua.md`
+> **§7 is the result**; §6 is the checklist it answers, and the rest of that file is the
+> migration itself, including the two `hyprctl keyword` call sites that had to become
+> `hyprctl eval` (§3) and why upstream's own `{ mouse = true }` bind option does not exist
+> (§4). Also settled there: **`dkmac` loads** — `hyprctl devices` reports
+> `active=Danish (Apple)` — which closes one of the two open questions below.
+>
+> **Two halves still want a hand at the host**, because neither can be driven from inside
+> the guest: resize the QEMU window and confirm the guest scanout follows, and run
+> `scripts/vm-screenshot.sh --type …` once from the host. The guest side of both is
+> verified (§7 item 4). **Item 3 is now closed**: the guest follows a host window resize,
+> which also settles Task 1's open question — no `qemu-cocoa-dynamic-display.patch` is
+> needed. Task 1 is configuration only.
+
 > **Update, 2026-09-06.** **Task 2 is largely done, and Task 1 has moved without being
 > started.** Findings for both are in `learned/keyboard-layout.md`. The guest now has a
 > custom `dkmac` layout (`modules/xkb/dkmac`), because `dk(mac)` turned out to be a stub
@@ -26,9 +48,9 @@ Two new pieces of work are requested, described in full below. Neither is in `PL
 > scanout is **3840x2412** — not the 1920x1080 `scripts/run-vm.sh` asks for. That second
 > one bears directly on Task 1's open question: the guest **did** follow the host window,
 > so dynamic resize is no longer "unknown and the first thing to measure". Full-screen mode
-> itself is still untouched. **Two things are unresolved**: nobody has yet seen `dkmac`
-> load (the running session predates `XKB_CONFIG_ROOT` — confirm after the next login), and
-> the `--type` trap flagged in Task 2 below is now real rather than predicted.
+> itself is still untouched. **One thing is now resolved and one is not**: `dkmac` has been
+> seen to load (`learned/hyprland-lua.md` §7), and the `--type` trap flagged in Task 2 below
+> is real rather than predicted.
 
 ## Paste this into the new session
 
@@ -158,7 +180,7 @@ Where the pieces live:
 | Hyprland (the real one) | `home/chime/hyprland.nix`, `input.kb_layout` | `kb_layout = "us,dk"` plus `kb_options = "grp:alt_shift_toggle"` or `grp:win_space_toggle` |
 | An explicit keybind | same file | `hyprctl switchxkblayout <device> next` — the device name is `qemu-qemu-usb-keyboard` here, but hardcoding an emulated device name is exactly the coupling this repo avoids; `current` / `all` forms exist |
 | Showing which is active | `home/chime/waybar.nix` | waybar's `hyprland/language` module; theme it from `home/chime/theme/` like every other module, and mind that glyphs are **codepoints, never pasted characters** (`learned/phase-4.md` §1) |
-| The text console | `modules/core.nix` | `console.keyMap` is unset. tty1 matters here — quitting Hyprland with `Super+Shift+Q` drops you to `agreety` on it (`learned/phase-3.md` §4) |
+| The text console | `modules/desktop.nix` | Follows now: `console.useXkbConfig = true` compiles the same layout with `ckbcomp` (`learned/keyboard-layout.md` §7). tty1 matters here — quitting Hyprland with `Super+Shift+Q` drops you to `agreety` on it (`learned/phase-3.md` §4) |
 
 ### The trap, and it is a real one
 
@@ -169,11 +191,12 @@ layout is active. So with `dk` selected, `--type` will silently type different c
 and the symbols are what move (`learned/phase-3.md` §1 documents the US-position
 assumption: `$` is `shift-4`, `_` is `shift-minus`).
 
-This is the agent's own eyes and hands, used by every graphical test in Phases 3–6. Any
-default that leaves a non-US layout active at login will make those tests lie. **Leave `us`
-first in the list**, and if that is not what you want day to day, say so plainly in the
-commit rather than letting a future session discover it through a test that fails for no
-visible reason.
+This is the agent's own eyes and hands, used by every graphical test in Phases 3–6. That
+made it a live hazard rather than a note, and it is now handled rather than avoided:
+`--type` forces the compositor to `us` over ssh for the duration and puts the old layout
+back (`learned/keyboard-layout.md` §6). A layout *switcher* would not break it again — it
+reads whatever is active rather than assuming — but it would inherit the same requirement,
+that `--type` can reach ssh and a live compositor.
 
 ---
 

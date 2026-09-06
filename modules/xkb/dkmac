@@ -22,4 +22,21 @@ xkb_symbols "basic" {
     // the PC convention. AltGr+2 is deliberately left alone: it costs nothing to keep, and
     // muscle memory for it is worth preserving while this layout is still being fitted.
     key <BKSL> { [ apostrophe, asterisk, at, multiply ] };
+
+    // Apple swaps the first two levels of the two keys a PC Danish layout spends on
+    // ½/§ and </>: on the real hardware the key left of 1 is < and >, and the key left
+    // of Z is $ and §. dk(basic) has them the PC way round — <TLDE> as onehalf/section
+    // and <LSGT> as less/greater.
+    //
+    // Levels 3 and 4 are carried over from dk(basic) unchanged rather than swapped along
+    // with them, which keeps backslash on Option+<LSGT>. Losing the easy backslash to a
+    // layout change would be a quiet and expensive regression on a developer machine.
+    key <TLDE> { [    less,  greater, threequarters, paragraph ] };
+    key <LSGT> { [  dollar,  section,     backslash,   notsign ] };
+
+    // Apple puts the euro on Shift+4, where a PC Danish layout leaves the generic
+    // currency sign ¤ that latin(type2) supplies. Option+4 keeps dollar: it is
+    // redundant now that <LSGT> carries $, but it costs nothing and the same argument
+    // applies as for AltGr+2 above.
+    key <AE04> { [ 4, EuroSign, dollar, onequarter ] };
 };
