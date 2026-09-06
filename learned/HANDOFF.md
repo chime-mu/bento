@@ -37,7 +37,9 @@ Two new pieces of work are requested, described in full below. Neither is in `PL
 > **Two halves still want a hand at the host**, because neither can be driven from inside
 > the guest: resize the QEMU window and confirm the guest scanout follows, and run
 > `scripts/vm-screenshot.sh --type …` once from the host. The guest side of both is
-> verified (§7 items 3 and 4). Nothing about the tasks below changed.
+> verified (§7 item 4). **Item 3 is now closed**: the guest follows a host window resize,
+> which also settles Task 1's open question — no `qemu-cocoa-dynamic-display.patch` is
+> needed. Task 1 is configuration only.
 
 > **Update, 2026-09-06.** **Task 2 is largely done, and Task 1 has moved without being
 > started.** Findings for both are in `learned/keyboard-layout.md`. The guest now has a

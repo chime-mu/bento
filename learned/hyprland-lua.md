@@ -273,3 +273,36 @@ rather than letters.**
 The guest half is independently confirmed regardless (§7 item 4): the `eval` answers `ok`
 and `hyprctl devices` shows `active_keymap` flipping. What is unproven is only that the
 host script's call reaches it.
+
+### Item 3, closed — and Task 1's open question with it
+
+Confirmed by hand on 2026-09-06 after leaving the macOS full-screen space (see below).
+Dragging the Cocoa window smaller took the guest from `3840x2412` to `2224x1396`, with
+`/sys/class/drm/card0-Virtual-1/modes` reporting the same new preferred mode and `scale`
+staying at 2. Nothing on `bento-display-sync`'s stderr. So the full chain works:
+
+```
+host window resize → dpy_set_ui_info → virtio-gpu EDID → DRM hotplug uevent
+  → bento-display-sync → hyprctl eval 'hl.monitor({…})' → Hyprland
+```
+
+**This settles the open question in `learned/HANDOFF.md` Task 1**: the guest follows the
+host window *without* `qemu-cocoa-dynamic-display.patch`. The GL/texture-borrowing series
+already in `scripts/patches/` touches `ui/cocoa.m`'s `updateUIInfo`, and that is evidently
+enough. Task 1 is configuration, not a patch.
+
+Two things learned in the process:
+
+- **The preferred mode is the tell for what the host is publishing.** A non-standard entry
+  at the top of `modes` — `3840x2412`, `2224x1396` — cannot come from the generic EDID
+  timing list, so it is the live window geometry at 2x Retina backing. `run-vm.sh` asks for
+  `xres=1920,yres=1080`, which would be `3840x2160`; seeing anything else means the dynamic
+  path is live. **It is not a reliable indicator of full-screen vs windowed**, though — that
+  inference was made here and was wrong.
+- **`run-vm.sh` defaults to immersive full screen**, so there is no window edge to drag
+  unless it was launched `--windowed`. From a full-screen space, push the pointer to the top
+  of the Mac screen to reveal the menu bar and use the green button, or drag the space's
+  thumbnail out of Mission Control. `Ctrl+Cmd+F` does *not* work: `full-grab=on` forwards
+  Cmd combos to the guest.
+
+Resizing is reported as **slow** — noted, not yet measured or explained.
