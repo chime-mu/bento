@@ -13,7 +13,7 @@ SCRIPT = REPOSITORY / "scripts/vm-screenshot.sh"
 
 
 class VMScreenshotTests(unittest.TestCase):
-    def test_consumes_private_runtime_descriptor(self):
+    def test_consumes_private_version_2_runtime_descriptor(self):
         with tempfile.TemporaryDirectory(prefix=".bq.", dir=REPOSITORY) as temporary:
             artifacts = Path(temporary)
             runtime = artifacts / "runtime.private"
@@ -24,11 +24,12 @@ class VMScreenshotTests(unittest.TestCase):
             descriptor.write_text(
                 json.dumps(
                     {
-                        "version": 1,
+                        "version": 2,
                         "qmp": str(qmp),
                         "pid": os.getpid(),
                         "sshPort": 2345,
                         "gpu": "software",
+                        "audio": False,
                     }
                 )
             )

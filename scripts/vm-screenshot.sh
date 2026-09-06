@@ -102,15 +102,21 @@ if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
     raise SystemExit("runtime descriptor has unsafe ownership or permissions")
 with open(path, encoding="utf-8") as stream:
     value = json.load(stream)
-if value.get("version") != 1:
+if value.get("version") != 2:
     raise SystemExit("unsupported runtime descriptor version")
 qmp = value.get("qmp")
 pid = value.get("pid")
 port = value.get("sshPort")
 gpu = value.get("gpu")
+audio = value.get("audio")
+audio_socket = value.get("audioSocket")
+audio_routes = value.get("audioRoutes")
 if (not isinstance(qmp, str) or not os.path.isabs(qmp)
         or not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0
-        or not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535):
+        or not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535
+        or not isinstance(audio, bool)
+        or (audio and (not isinstance(audio_socket, str) or not os.path.isabs(audio_socket)
+                       or not isinstance(audio_routes, str) or not os.path.isabs(audio_routes)))):
     raise SystemExit("invalid runtime descriptor")
 if gpu not in ("virgl", "software"):
     raise SystemExit("invalid GPU mode in runtime descriptor")
@@ -173,7 +179,18 @@ guest_hyprctl() {
         export XDG_RUNTIME_DIR=/run/user/1000
         WAYLAND_DISPLAY=\$(cd \"\$XDG_RUNTIME_DIR\" && ls -1 | grep -m1 '^wayland-[0-9]\\+\$')
         [ -n \"\$WAYLAND_DISPLAY\" ] || { echo 'no wayland socket in '\"\$XDG_RUNTIME_DIR\" >&2; exit 1; }
-        export WAYLAND_DISPLAY
+        HYPRLAND_INSTANCE_SIGNATURE=\$(
+          for candidate in \"\$XDG_RUNTIME_DIR\"/hypr/*; do
+            [ -S \"\$candidate/.socket.sock\" ] || continue
+            basename \"\$candidate\"
+            break
+          done
+        )
+        [ -n \"\$HYPRLAND_INSTANCE_SIGNATURE\" ] || {
+          echo 'no Hyprland control socket in '"\$XDG_RUNTIME_DIR/hypr" >&2
+          exit 1
+        }
+        export WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE
         exec hyprctl $*"
 }
 
