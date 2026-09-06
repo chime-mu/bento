@@ -70,12 +70,32 @@ in
     # layout rather than Apple's (see modules/xkb/dkmac). Registering it here rather than
     # pointing Hyprland at a bare file is what makes it a real layout: this module patches
     # it into evdev.xml and base.lst, and sets XKB_CONFIG_ROOT session-wide, so the greeter
-    # and any future console keymap see the same layout the compositor does.
+    # and the console keymap see the same layout the compositor does.
     services.xserver.xkb.extraLayouts.dkmac = {
       description = "Danish (Apple)";
       languages = [ "dan" ];
       symbolsFile = ./xkb/dkmac;
     };
+
+    # Naming the layout at the *system* level as well, which is what makes the sentence
+    # above true rather than aspirational. Nothing in a Wayland session reads
+    # `services.xserver.xkb` — Hyprland is told separately, in home/chime/hyprland.nix,
+    # which now reads these two values back out of `osConfig` so the two cannot drift —
+    # but `console.useXkbConfig` does, and it is the only supported way to get a non-stock
+    # layout onto a tty.
+    #
+    # It runs `ckbcomp` at build time to translate the xkb layout into a kbd keymap, and
+    # nixos/modules/config/console.nix passes it `-I$XKB_CONFIG_ROOT` when that variable is
+    # set in `environment.sessionVariables` — which is exactly what the extra-layouts module
+    # above does. So `dkmac` resolves for the console for the same reason it resolves for
+    # the compositor, out of the same patched tree.
+    #
+    # This matters in one situation and it is the worst one: Hyprland failed to start, and
+    # the thing on tty1 is agreety asking for a password. Before this, that prompt was US
+    # while every other keyboard on the machine was Danish.
+    services.xserver.xkb.layout = "dkmac";
+    services.xserver.xkb.options = "lv3:alt_switch";
+    console.useXkbConfig = true;
 
     programs.hyprland.enable = true;
 

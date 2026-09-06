@@ -24,6 +24,13 @@ let
   softwareRendering = osConfig.bento.desktop.softwareRendering;
   dynamicDisplay = osConfig.bento.desktop.dynamicDisplay;
 
+  # The keyboard is a fact about the machine too, for the same reason: modules/desktop.nix
+  # has to name the layout at the system level anyway so that `console.useXkbConfig` can
+  # compile the same one for tty1, and a second literal here would be a second place to
+  # edit every time a key moves — with a silent divergence between the desktop and the
+  # login prompt as the failure.
+  keyboard = osConfig.services.xserver.xkb;
+
   # QEMU's Cocoa frontend refreshes virtio-gpu's EDID whenever its backing-pixel
   # geometry changes. Hyprland 0.56/Aquamarine 0.14 retain a stale mode cache for an
   # already-connected DRM output, so this helper decodes the fresh detailed timing
@@ -292,12 +299,15 @@ in
 
         input = {
           # The host is a Danish Mac. QEMU's virtio keyboard forwards raw scancodes rather
-          # than the host's resolved characters, so the layout has to be named again here or
-          # the guest reads a Danish keyboard as US.
-          kb_layout = "dkmac";
-          # Both Option keys chose level 3, as macOS does; xkb's default gives it to the
-          # right one alone, so Left-Option would otherwise be dead for symbols.
-          kb_options = "lv3:alt_switch";
+          # than the characters macOS resolved, so the guest reads a Danish keyboard as US
+          # unless the layout is named again inside. Both values come from
+          # modules/desktop.nix, which is also what tty1's keymap is compiled from.
+          #
+          # `lv3:alt_switch` is the half that is not a layout: it gives level 3 to *either*
+          # Option key, as macOS does, where xkb's default gives it to the right one alone
+          # and leaves Left-Option dead for symbols.
+          kb_layout = keyboard.layout;
+          kb_options = keyboard.options;
           follow_mouse = 1;
           # QEMU's usb-tablet sends absolute coordinates, so pointer acceleration would be
           # applied to a position that is already exactly where the host's cursor is.

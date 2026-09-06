@@ -180,7 +180,7 @@ Where the pieces live:
 | Hyprland (the real one) | `home/chime/hyprland.nix`, `input.kb_layout` | `kb_layout = "us,dk"` plus `kb_options = "grp:alt_shift_toggle"` or `grp:win_space_toggle` |
 | An explicit keybind | same file | `hyprctl switchxkblayout <device> next` — the device name is `qemu-qemu-usb-keyboard` here, but hardcoding an emulated device name is exactly the coupling this repo avoids; `current` / `all` forms exist |
 | Showing which is active | `home/chime/waybar.nix` | waybar's `hyprland/language` module; theme it from `home/chime/theme/` like every other module, and mind that glyphs are **codepoints, never pasted characters** (`learned/phase-4.md` §1) |
-| The text console | `modules/core.nix` | `console.keyMap` is unset. tty1 matters here — quitting Hyprland with `Super+Shift+Q` drops you to `agreety` on it (`learned/phase-3.md` §4) |
+| The text console | `modules/desktop.nix` | Follows now: `console.useXkbConfig = true` compiles the same layout with `ckbcomp` (`learned/keyboard-layout.md` §7). tty1 matters here — quitting Hyprland with `Super+Shift+Q` drops you to `agreety` on it (`learned/phase-3.md` §4) |
 
 ### The trap, and it is a real one
 
@@ -191,11 +191,12 @@ layout is active. So with `dk` selected, `--type` will silently type different c
 and the symbols are what move (`learned/phase-3.md` §1 documents the US-position
 assumption: `$` is `shift-4`, `_` is `shift-minus`).
 
-This is the agent's own eyes and hands, used by every graphical test in Phases 3–6. Any
-default that leaves a non-US layout active at login will make those tests lie. **Leave `us`
-first in the list**, and if that is not what you want day to day, say so plainly in the
-commit rather than letting a future session discover it through a test that fails for no
-visible reason.
+This is the agent's own eyes and hands, used by every graphical test in Phases 3–6. That
+made it a live hazard rather than a note, and it is now handled rather than avoided:
+`--type` forces the compositor to `us` over ssh for the duration and puts the old layout
+back (`learned/keyboard-layout.md` §6). A layout *switcher* would not break it again — it
+reads whatever is active rather than assuming — but it would inherit the same requirement,
+that `--type` can reach ssh and a live compositor.
 
 ---
 

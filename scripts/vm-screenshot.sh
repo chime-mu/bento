@@ -44,8 +44,12 @@
 # if the guest reads those positions as US. Under `dkmac` it does not. So --type asks the
 # guest for its layout over ssh, forces `us` for the duration, and restores it afterwards
 # — which means --type now needs a reachable ssh and a running compositor, and fails loudly
-# rather than typing the wrong thing. `--raw-keys` skips all of that, for a target that is
-# genuinely US already: the tty1 greeter, for one, since `console.keyMap` is unset.
+# rather than typing the wrong thing. `--raw-keys` skips all of that and sends the US
+# positions verbatim. There is no longer anywhere on this machine where that is simply
+# correct: `console.useXkbConfig` (modules/desktop.nix) compiles the same dkmac for tty1,
+# so the guard's one unreachable target — a tty, which has no compositor to ask — is not
+# US either. What still types as written under dkmac is letters in either case, digits,
+# space, tab and return; every symbol lands somewhere else.
 #
 # Requires python3 (macOS ships one) — the QMP protocol is line-delimited JSON over a unix
 # socket, and it needs a capabilities handshake before it accepts a command.
@@ -207,8 +211,9 @@ if [[ ${typing} -eq 1 && ${RAW_KEYS} -eq 0 ]]; then
     echo "error: --type could not read the guest's keyboard layout over ssh." >&2
     echo "       Without it the typed string is positions, not characters: under a" >&2
     echo "       non-US layout it types something else entirely, and nothing fails." >&2
-    echo "       Fix the ssh path, or pass --raw-keys if the target really is US" >&2
-    echo "       (the tty1 greeter is, for example — console.keyMap is unset)." >&2
+    echo "       Fix the ssh path, or pass --raw-keys to send US positions anyway —" >&2
+    echo "       under dkmac only letters, digits and spc/tab/ret survive that, and" >&2
+    echo "       that is true at a tty too now that console.useXkbConfig is set." >&2
     exit 1
   fi
   if [[ ${SAVED_LAYOUT} != "us" ]]; then
